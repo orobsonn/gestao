@@ -1,5 +1,5 @@
 ---
-name: orchestrating-delivery
+name: oc-orchestrating-delivery
 description: "Drives the LIGHT and FULL delivery loop — spec, plan, per-task executor/compliance/adversary/sniper cycle, final dual review, demo, and harvest. Dispatches one subagent per role via the task tool; never writes code itself. Invoked by triaging-requests for LIGHT/FULL; QUICK runs inline and never reaches this skill."
 license: MIT
 compatibility: opencode
@@ -14,7 +14,7 @@ metadata:
 
 **Announce at the start (pt-br):** "Usando orchestrating-delivery para conduzir a entrega no modo <LIGHT|FULL>."
 
-Invoked by `triaging-requests` for **LIGHT** and **FULL**. QUICK never reaches here (it runs inline, dispatching a single `executor-low`/`executor-medium` + gates + `shipper`).
+Invoked by `oc-triaging-requests` for **LIGHT** and **FULL**. QUICK never reaches here (it runs inline, dispatching a single `executor-low`/`executor-medium` + gates + `shipper`).
 
 > ⚠️ Invalid `subagent_type` returns an **explicit error** on OC 1.17.18 — still use exact tier names; do not rely on fuzzy match. NEVER dispatch a bare `executor` or `sniper`; always the exact tiered name (`executor-low`, `executor-medium`, `executor-high`, `sniper-low`, `sniper-medium`, `sniper-high`).
 
@@ -46,14 +46,14 @@ HARD-GATES (human, pt-br, product-language): **approve spec → approve plan →
 
 ## Interactive vs headless
 
-Detect **first** (same signals as `triaging-requests`):
+Detect **first** (same signals as `oc-triaging-requests`):
 
 - **HEADLESS** when the trigger says autonomous / VPS cron, or `$HARNESS_OBSERVABILITY_RUN_PATH` / `$HARNESS_OC_DATA_HOME` is set.
 - Otherwise **INTERACTIVE**.
 
 | Touchpoint | INTERACTIVE | HEADLESS |
 |---|---|---|
-| Brainstorm / spec | `brainstorming` with operator | exploration + synthesize + **spec adversary** — never wait |
+| Brainstorm / spec | `oc-brainstorming` with operator | exploration + synthesize + **spec adversary** — never wait |
 | HARD-GATE 1 (spec) | operator confirms | adversary clean → proceed; write spec into PR body |
 | HARD-GATE 2 (plan) | operator confirms | `plan-reviewer` dual **APPROVE** is the gate |
 | HARD-GATE 3 (demo) | operator tests | auto-validate ACs; attach to PR |
@@ -122,11 +122,13 @@ Never use the edit tool.
 ## Phase 0 — Brainstorm + spec
 
 1. Read the native durable index — global/project `AGENTS.md` and any root router table (folder → what lives there). This is your macro view.
-   - **Cold-start check:** if this is a non-trivial existing codebase and the index is cold (no entries in MEMORY.md, root router unfilled), dispatch the `surveying-codebase` skill **first** to seed durable knowledge from the code, then read the now-populated index before shaping the spec.
-2. **Load and follow the `brainstorming` skill** (INTERACTIVE or HEADLESS branch). Spec must include `#uj-N`, `#ac-N.M`, constraints, and locked decisions (operator-owned in interactive; trigger-derived + explicit open risks in headless).
+   - **Cold-start check:** if this is a non-trivial existing codebase and the index is cold (no entries in MEMORY.md, root router unfilled), dispatch the `oc-surveying-codebase` skill **first** to seed durable knowledge from the code, then read the now-populated index before shaping the spec.
+2. **Load and follow the `oc-brainstorming` skill** (INTERACTIVE or HEADLESS branch). Spec must include `#uj-N`, `#ac-N.M`, constraints, and locked decisions (operator-owned in interactive; trigger-derived + explicit open risks in headless).
 3. Write the spec file **via bash** (`cat >`) — `edit` is denied.
    - The canonical runtime copy is `.opencode/plans/<sessionID>-<feature_id>/spec.md`. This session+feature-bound artifact is the durable brainstorming completion evidence source; a docs copy alone is not restart evidence.
-4. **Upfront spec-adversary (mandatory LIGHT/FULL):** dispatch `adversary-family-1` (+ optional `adversary-family-2`). The Task prompt MUST say to follow the agent's exact JSON schema and MUST NOT request `SHIP`/`BLOCK`, `verdict`, `mechanism`, `sweep`, `blockers`, or any extra field. Family 1 returns only `{ "issues": [...] }`; an empty array is clean. Blocking issues that cannot self-resolve → stop (headless: PR/issue comment).
+4. **Upfront spec-adversary (mandatory LIGHT/FULL):** dispatch `adversary-family-1` (+ optional `adversary-family-2`). The Task prompt MUST say to follow the agent's exact JSON schema and MUST NOT request `SHIP`/`BLOCK`, `verdict`, `mechanism`, `sweep`, `blockers`, or any extra field. Family 1 returns only `{ "issues": [...] }`.
+
+   **Acceptance is defined, and "clean" is not the only way out.** No unresolved medium/high finding → the pass is accepted: stamp the marker and go to the plan. A material finding with rounds to spare → revise `spec.md` so it is answered (a criterion that pins the behaviour, or an explicit locked decision that accepts it), then re-attack. **Nothing refuses another round** — the adversary loop has no deterministic cap, on purpose — so *you* decide when it stops: when the rounds stop producing progress, **stop and escalate to the operator** in product language (list the residual findings as a product decision: accept these risks, or change the spec) and wait. Headless has no human in the turn: record them in `spec.md` under an explicit "Open risks" heading, stamp, proceed, and put them in the PR body for the human gate there. The `adversary_nudge` on each round's return tells you which of the three you are in — follow it. Grinding out rounds hoping for an empty array is the failure mode: an adversary asked to find failure modes always finds one, and every spec rewrite opens fresh surface.
 
 **HARD-GATE 1 — approve spec (pt-br, product-language):** present what the feature does AND surface **each locked decision in plain product terms**. **Do not show code or schema.**  
 **HEADLESS:** no wait — adversary clean is the gate; record the spec summary in the PR body.
@@ -137,24 +139,24 @@ Never use the edit tool.
 
 ## Phase 1 — Plan
 
-0. **Planner preflight / resume:** attempt planner only after the two official ceremony transitions above. A denial is stable structured JSON with `code`, `missing_proof`, and `next_transition`. Pass that exact object to native `ceremony-next({ denial })`; execute only `descriptor.coordinator_step`, and after successful completion/acceptance call `descriptor.completion_transition`. The consumer is the authority for the closed mapping (`brainstorming` skill or `adversary-family-1` Task); if it rejects, stop. Never derive role/tool names from denial strings, and never dispatch `explore`, `general`, or a diagnostic subagent. Preflight may restore a marker after process restart only from session+feature+phase-bound evidence that verifies against the canonical spec/result; an old/unsigned marker is not evidence. If proof is absent or invalid, resume the exact named phase or stop and report `missing_proof` without inventing a terminal state.
+0. **Planner preflight / resume:** attempt planner only after the two official ceremony transitions above. A denial is stable structured JSON with `code`, `missing_proof`, and `next_transition`. Pass that exact object to native `ceremony-next({ denial })`; execute only `descriptor.coordinator_step`, and after successful completion/acceptance call `descriptor.completion_transition`. The consumer is the authority for the closed mapping (`oc-brainstorming` skill or `adversary-family-1` Task); if it rejects, stop. Never derive role/tool names from denial strings, and never dispatch `explore`, `general`, or a diagnostic subagent. Preflight may restore a marker after process restart only from session+feature+phase-bound evidence that verifies against the canonical spec/result; an old/unsigned marker is not evidence. If proof is absent or invalid, resume the exact named phase or stop and report `missing_proof` without inventing a terminal state.
 
 1. Dispatch `planner` via Task with the approved spec. The planner returns one `execution-plan.json` (schema in `planner.md`; the planner self-validates structure first).
 
-   **Provider recovery:** `planner-recovery` atomically claims each Task using OpenCode's `callID` plus a persisted attempt token. Successful Task output is not success yet: it becomes `plan_pending_write`. Rewrite the returned plan at the canonical path before any downstream dispatch; `plan-gate` verifies one coherent locked snapshot against the current attempt's session/feature, exact `plan.feature_id`, semantic hash, prior-file fingerprint, final file hash/mtime/size, and structural validity before persisting `usable`. Missing/legacy planner state fails closed. Once bound, the canonical plan is immutable through harness Write/Edit/Bash until a new planner claim moves state back to planning. Never reuse an old plan.
+   **Provider recovery:** `planner-recovery` atomically claims each Task using OpenCode's `callID` plus a persisted attempt token. **You do NOT write the plan.** On a usable planner result the plugin itself persists the returned plan at the canonical path (atomic temp+rename) and binds it in the same hook — the plan never passes through your output tokens, so it cannot be paraphrased, truncated, or dropped. `plan-gate` still verifies one coherent locked snapshot against the current attempt's session/feature, exact `plan.feature_id`, semantic hash, prior-file fingerprint, final file hash/mtime/size, and structural validity before persisting `usable`. A response carrying two or more distinct full plans is `plan_invalid` (fail-closed on ambiguity — never "the first one wins"), as is a plan whose `feature_id` does not match the session; in both cases the existing canonical file is left untouched. Missing/legacy planner state fails closed. Never reuse an old plan.
 
    Real Task rejection is observed through OpenCode's `message.part.updated` / `ToolStateError` event (not only `tool.execute.after`). Authentication, credit, timeout, and provider failures set `planner_status: "planner_unavailable"` plus a bounded `planner_retry_outcome`. If `roles.planner.fallback` is configured and its agent model matches, dispatch `planner-fallback` exactly once; otherwise report `delivery-blocked` in pt-br and stop. A malformed, empty, stub, or prose-only output is `plan_invalid` even when its prose says `429`/provider; it never activates fallback. Active claims have a bounded lease: an expired primary converges to the configured fallback policy, while an expired/failed fallback converges to `delivery-blocked`. Until gate-state says `usable`, do not dispatch plan reviewers, test-author, executors, or snipers.
-   Planner is **primary-only**: on REVISE or `plan_invalid` / `planning_revision`, re-dispatch **`planner`** (same model) within **K=3**. Do **not** dispatch `planner-fallback`. After 3 same-agent failures → stop and comment (`delivery-blocked` / product error) — never `git push` / `gh pr`, never implement inline.
+   Planner is **primary-only**: on REVISE or `plan_invalid` / `planning_revision`, re-dispatch **`planner`** (same model). Do **not** dispatch `planner-fallback`. The **K=3 budget is per review round, not per session**: each plan-review round that persists a REVISE credits a fresh set of 3 attempts, so a revision loop can run the full `plan_review_count` budget. What K=3 still bounds is *failure* inside one round (unparseable plan, refused envelope, provider blip) — after 3 of those in the same round, stop and comment (`delivery-blocked` / product error), never `git push` / `gh pr`, never implement inline. A separate session-lifetime ceiling stops a pathological run; when its deny fires it says so explicitly and no reset clears it — escalate to the operator and stop. Both denies now arrive as an instruction in product language; follow it instead of ending the turn silently.
 
-2. **CANONICAL PATH — write/overwrite the full plan at:**
+2. **CANONICAL PATH — written for you by `planner-recovery` at:**
    ```
    .opencode/plans/<sessionID>-<feature_id>/execution-plan.json
    ```
-   via bash (`cat >` / heredoc). The `<sessionID>-` prefix is **mandatory** — NEVER omit it and write to a path that starts directly with the feature_id. The planner output overwrites any classify stub in place (lowercase `mode: "light"|"full"`, non-empty `tasks`). `validate-plan` and `plan-reviewer` both read from this exact path.
+   Do **not** re-emit the plan through `cat >` / heredoc: hand-transcribing an 8 KB JSON is exactly how a run stranded itself at `plan_pending_write` with every downstream dispatch gated. The plugin overwrites any classify stub in place. `validate-plan` and `plan-reviewer` read from this exact path. If the Task metadata says the plan was refused, fix it **with the planner** — never write the file yourself.
 
 3. Run the **`validate-plan` tool** on that file — a deterministic **structural** gate. On FAIL, hand its error list to `planner` and re-plan. **Cap 2 loops**, then escalate to the operator in product-language.
 
-4. Dispatch `plan-reviewer-family-1` (read-only) for **engineering soundness**, then attempt `plan-reviewer-family-2` → `APPROVE | REVISE`. On REVISE: hand findings to `planner`, re-plan, re-run `validate-plan`, re-review. **Cap 2 revision loops**; if still REVISE, escalate the blocking finding to the operator in product-language.
+4. Dispatch `plan-reviewer-family-1` (read-only) for **engineering soundness**, then attempt `plan-reviewer-family-2` → `APPROVE | REVISE`. On REVISE: hand findings to `planner`, re-plan, re-run `validate-plan`, re-review. **Keep looping until APPROVE** — a REVISE verdict hard-blocks every writing hand, so stopping mid-loop strands the run. The budget is enforced by the gate (`plan_review_count`, 5 useful rounds), not by your judgment: the `revise_nudge` on the review's return tells you the round and what remains. Escalate to the operator **only** when that nudge says the budget is exhausted.
 
 5. **DETERMINISTIC sensitive-path override:** compare the plan's `scope_paths` against the allowlist:
    `**/auth/**`, `**/payment/**`, `**/billing/**`, `**/*.sql`, `**/migrations/**`, `**/.env*`, `**/package.json` (when adding/upgrading deps).
@@ -222,7 +224,7 @@ Initialize `.opencode/plans/<sessionID>-<feature_id>/shared_context.md` **via ba
 | e | Security (conditional) | Dispatch `security` when the task touches auth/secrets/external-input/new-deps/SQL/service-entrypoint. Returns `SECURE \| UNSAFE` + issues. |
 | f | Gates (deterministic, no LLM) | For a targeted Vitest file, call native `verify` with the task id and exact named path; do not use a package launcher. Run other prescribed gates through their existing channel. Failure → issue list. |
 | g | Fix | Map ALL issues (compliance + adversary + security + gates) to `sniper-<tiers[issue.severity]>`. Sniper is the ONLY fixer (`edit` allow, `bash` deny, no new files). **HIGH fix — or a `medium` in an irreversible class (orphan-state/race/idempotency):** after the sniper returns DONE, call native `mark` with `action: regate-pending` + that task's `task_id` (host `obs-hand` also auto-arms sealed `regate_pending` — belt + suspenders). Then re-dispatch `adversary-family-1` fresh-virgin against the NEW surface the fix created. On zero blocking findings, call native `mark` with `action: regate-passed` + `task_id` + `sha` = HEAD. Unmatched `regate_pending` is **delivery-blocking** (bash-decide denies `git push` / `gh pr`). Re-run the affected gate after every sniper pass. |
-| h | Record | Rewrite `.opencode/plans/<sessionID>-<feature_id>/shared_context.md` **via bash** with the budget-capped knowledge ledger so far; adversary never reads it. Append this task's raw finding blocks (compliance/adversary/security/sniper) to the run `findings.md` buffer at the project root **via bash** — it is the producer the harvester/`recording-findings` consumes; if never written, the run's learnings are lost. |
+| h | Record | Rewrite `.opencode/plans/<sessionID>-<feature_id>/shared_context.md` **via bash** with the budget-capped knowledge ledger so far; adversary never reads it. Append this task's raw finding blocks (compliance/adversary/security/sniper) to the run `findings.md` buffer at the project root **via bash** — it is the producer the harvester/`oc-recording-findings` consumes; if never written, the run's learnings are lost. |
 | i | Escalate | See escalation ladder below. |
 
 **Mid-run observability belt (Telegram outbox — fail-open, never gates delivery):** when `HARNESS_OBSERVABILITY_RUN_PATH` is set (VPS headless), emit the same curated events the drain already renders. Prefer structural producers (plugins `obs-plan-write` / `obs-eye` / `obs-hand` + classify `pipeline-type`). `obs-hand` emits `task-executing` (before) and `hand-ran` (after) for executor/sniper/test-author from the trusted session feature plus the required prompt task marker — do not rely on unsupported Task args or prose alone. Additionally, the conductor MUST run these observability-only mark-gate CLI side-effects (idempotent / fail-open if env unset):
@@ -317,7 +319,7 @@ Generate a demo script derived from the **UJs/ACs** (`demo.scenarios_from_refs`)
 
 ## Phase 5 — Harvest + ship
 
-- Dispatch `harvester` once: consolidates `findings.md`, routes durable learnings by blast-radius (project pattern → native MEMORY.md + index · law of one folder → that folder's nested `AGENTS.md` + root router row · global convention → kaizen proposal), then **deletes the ephemeral run buffers** — `findings.md` (project root) + `.opencode/plans/<sessionID>-<feature_id>/shared_context.md` (git is the durable audit). It owns `recording-findings` / `distilling-learnings` / `proposing-improvements`. It never auto-writes to memory.
+- Dispatch `harvester` once: consolidates `findings.md`, routes durable learnings by blast-radius (project pattern → native MEMORY.md + index · law of one folder → that folder's nested `AGENTS.md` + root router row · global convention → kaizen proposal), then **deletes the ephemeral run buffers** — `findings.md` (project root) + `.opencode/plans/<sessionID>-<feature_id>/shared_context.md` (git is the durable audit). It owns `oc-recording-findings` / `oc-distilling-learnings` / `oc-proposing-improvements`. It never auto-writes to memory.
 - Delivery (branch/commit/push/PR via `shipper`) happens **only on explicit operator authorization** — merge/deploy is irreversible (human checkpoint). `shipper` never edits code.
 - **FULL ship preconditions (bash-decide):** ceremony + dual + regate + capture + **final-review** + **demo when interactive**. Missing final/demo → deny with explicit `denied_class`.
 

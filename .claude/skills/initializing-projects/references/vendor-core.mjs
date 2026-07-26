@@ -66,11 +66,11 @@ function ok(label) {
   process.stdout.write(`${green("✓")} ${label}\n`);
 }
 
-const FRAMEWORK_OWNED = ["agents", "skills", "rules", "hooks"];
+const FRAMEWORK_OWNED = ["agents", "skills", "rules", "hooks", "docs"];
 const FRAMEWORK_FILES = ["CLAUDE-HARNESS-MEMORY-MODEL.md"];
 
 /** OpenCode framework-owned dirs (overwritten on every vendor). */
-const OC_FRAMEWORK_OWNED = ["agents", "docs", "skills", "plugin", "tools", "hands", "rules"];
+const OC_FRAMEWORK_OWNED = ["agents", "command", "docs", "skills", "plugin", "tools", "hands", "rules"];
 const OC_FRAMEWORK_FILES = ["harness.routing.json", "AGENTS.md"];
 
 // Opt-in add-on modules (siblings of core/, NOT framework-owned). Each is vendored ONLY when the
@@ -150,8 +150,13 @@ export const FRESH_NATIVE_PATHS = {
   ],
 };
 
+// `state/` is the fleet engine's per-run stateDir (`<projectRoot>/.claude/state`) — run locks,
+// observability, the issue body, and an `issue-<N>-env-<uuid>.env` holding the hand token. A repo's
+// root `.env`/`.env.*` rules do NOT cover that filename, so without this line the token is merely
+// untracked, one `git add -A` away from being committed.
 const GITIGNORE = `# Claude Harness — ephemeral, never committed
 plans/
+state/
 settings.local.json
 *.local.md
 .harness-version-check-cache

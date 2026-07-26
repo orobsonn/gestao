@@ -20,6 +20,9 @@ export async function createLoopGuardHooks(
     throwIfLoopDenied,
     loopCounterKey,
   } = await import("./lib/loop-decide.mjs")
+  const { decideReviseNudge } = await import("./lib/revise-nudge.mjs")
+  const { decideAdversaryNudge } = await import("./lib/adversary-nudge.mjs")
+  const { dedupeByType, obsAppend } = await import("./lib/obs-emit.mjs")
   const { withGateStateLock } = await import("./lib/gate-state.mjs")
   const { reviewAgentIdentity } = await import("../agents/review-catalog.mjs")
   const { gateStatePath } = await import("../shared/lib/path-helpers.mjs")
@@ -29,7 +32,7 @@ export async function createLoopGuardHooks(
     finalizeHostDualMerge,
   } = await import("./lib/dual-merge.mjs")
   const { extractSubagentType, isTaskTool } = await import("./lib/dual-enforcement.mjs")
-  const { applyAgentDispatchOutcome } = await import("../shared/lib/agent-retry.mjs")
+  const { applyAgentDispatchOutcome, applyGateBlockedDispatch } = await import("../shared/lib/agent-retry.mjs")
   const { decideCallOutcomeOnce } = await import("../shared/lib/agent-retry-call.mjs")
   const { parseTaskDispatchIdentity } = await import("./lib/task-dispatch-identity.mjs")
   const { isDeliveryRole } = await import("./lib/roles.mjs")
@@ -87,6 +90,8 @@ export async function createLoopGuardHooks(
     role: string,
     taskId: string,
     outcome: "success" | "failure",
+    failureClass?: string,
+    rawError?: unknown,
   ) {
     if (!sessionID || !callID || !role || !isHarnessTaskRole(role)) return
     const dedupeKey = `${sessionID}::${callID}`
@@ -94,8 +99,19 @@ export async function createLoopGuardHooks(
     if (!decision.apply || !decision.outcome) return
     const sp = statePathFor(sessionID)
     if (!sp) return
+    // A harness-internal deny means the agent never ran: it is the dispatcher's precondition
+    // that failed, not the agent. Charging it to the agent's K=3 quality budget bans an
+    // innocent agent for the rest of the feature. Bounded separately instead.
+    const gateBlocked = failureClass === "gate_blocked"
     withGateStateLock(sp, (state) => {
       let next = state
+      if (gateBlocked) {
+        return applyGateBlockedDispatch(next, {
+          role,
+          taskId,
+          reason: typeof rawError === "string" ? rawError : (rawError as { message?: string })?.message,
+        }).state
+      }
       // If after-hook already reset the counter (false success), re-apply failure once.
       if (decision.undoSuccess) {
         next = applyAgentDispatchOutcome(next, { role, taskId, outcome: "failure" }).state
@@ -117,7 +133,7 @@ export async function createLoopGuardHooks(
     const taskId = taskIdOf(args)
     // Unified K=3: count once per callId (error event and after-hook may both fire).
     if (failureClass || rawError) {
-      recordAgentRetry(sessionID, callID, sub, taskId, "failure")
+      recordAgentRetry(sessionID, callID, sub, taskId, "failure", failureClass, rawError)
     } else if (sub) {
       recordAgentRetry(sessionID, callID, sub, taskId, "success")
     }
@@ -150,6 +166,47 @@ export async function createLoopGuardHooks(
       return outcome.state
     })
     if (!result.ok) throw new Error(`[loop-guard] ${result.reason}`)
+    // Deterministic continuation nudge: a REVISE verdict blocks every writing hand, so the loop
+    // only advances if the orchestrator re-dispatches the plan-reviewer. Injected on the metadata
+    // channel (the one OC actually delivers) strictly AFTER the verdict is persisted.
+    try {
+      const nudge = decideReviseNudge({ state: result.state, subagentType: sub })
+      if (nudge.action === "inject" && output != null && typeof output === "object") {
+        if (!output.metadata || typeof output.metadata !== "object") output.metadata = {}
+        output.metadata.revise_nudge = nudge.context
+      }
+    } catch {
+      /* fail-open — a nudge never blocks review accounting */
+    }
+    // Same channel, the spec phase's own loop: acceptance of a spec-adversary pass had no
+    // definition in code, so it behaved like a coin flip — one session stamped after round 1, the
+    // next re-attacked to the cap and froze before the planner ever ran.
+    try {
+      const nudge = decideAdversaryNudge({ state: result.state, subagentType: sub, taskId })
+      if (nudge.action === "inject" && output != null && typeof output === "object") {
+        if (!output.metadata || typeof output.metadata !== "object") output.metadata = {}
+        output.metadata.adversary_nudge = nudge.context
+      }
+      // With no deterministic cap, prose is the whole stop mechanism — and prose nobody records
+      // fails exactly like prose nobody obeys. Persist the escalation and emit it on the
+      // observability feed so an ignored one is visible to the operator instead of invisible.
+      if (nudge.action === "inject" && nudge.kind === "escalate") {
+        const round = typeof result.state.adversary_loop_count === "number" ? result.state.adversary_loop_count : 0
+        const reportHash = typeof result.state.primary_review_last_report_hash === "string" ? result.state.primary_review_last_report_hash : ""
+        withGateStateLock(sp, (prev) => {
+          const already = prev.spec_adversary_escalation as Record<string, unknown> | undefined
+          if (already && already.report_hash === reportHash && already.round === round) return prev
+          return { ...prev, spec_adversary_escalation: { round, report_hash: reportHash, at: new Date().toISOString() } }
+        })
+        try {
+          obsAppend({ type: "spec-adversary-escalated", round }, { dedupe: dedupeByType })
+        } catch {
+          /* observability is advisory */
+        }
+      }
+    } catch {
+      /* fail-open — a nudge never blocks review accounting */
+    }
     // Fail-open: merge artifact is audit trail; gate dual_status / plan_verdict already sealed.
     if (mergeIntent) {
       try {

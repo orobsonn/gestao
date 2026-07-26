@@ -1,5 +1,5 @@
 ---
-name: updating-harness
+name: oc-updating-harness
 description: "Install or update the Claude Harness in the CURRENT project from within an OpenCode session. Runs the CLI from the pinned git release tag (npx github:orobsonn/claude-harness#<tag> init) so no engine needs to be vendored into .opencode/ and it never depends on the lagging npm release. Detects install-vs-update, resolves which runtime shell(s) to vendor, and re-vendors without clobbering project memory/kaizen/config. Run it in any repo to onboard or sync the OpenCode harness after a new release."
 license: MIT
 compatibility: opencode
@@ -11,7 +11,7 @@ metadata:
 # Updating-Harness (OpenCode) — install or update the harness from within OpenCode
 
 This is the **loader-visible lifecycle entry for an OpenCode-native session**. A Claude Code session
-has its own `updating-harness` skill that runs the vendored engine directly; an OpenCode session cannot
+has its own `oc-updating-harness` skill that runs the vendored engine directly; an OpenCode session cannot
 see that engine, so here we drive the CLI **from the pinned git release tag**, which fetches the engine
 from that release. This keeps an OpenCode project self-maintaining — it never depends on a Claude Code
 session to administer it, nor on the npm release being current.
@@ -23,9 +23,10 @@ All identifiers/commands stay in English; every message to the operator is in **
 <HARD-GATE>
 This is a top-level, interactive lifecycle operation, not a delivery. Run only from a direct operator
 request and only when no delivery is active. Do not call `classify`, create or modify a plan/spec,
-load `brainstorming` or `orchestrating-delivery`, or dispatch any subagent. Run the exact release CLI
-command directly from `build`, report the result, and require a session restart. In headless or relayed
-input, stop without modifying the harness.
+load `oc-brainstorming` or `oc-orchestrating-delivery`, or dispatch any subagent. This runs in the
+`harness-config` lane, which the operator reaches by typing `/updating-harness` — never from `build`.
+Run the exact release CLI command, report the result, and require a session restart. In headless or
+relayed input, stop without modifying the harness.
 </HARD-GATE>
 
 ---
@@ -68,11 +69,14 @@ First resolve the latest release tag (the CLI runs from that pinned tag):
 gh release view --repo orobsonn/claude-harness --json tagName -q .tagName   # → <latest-tag>, e.g. v0.40.0
 ```
 
-Both first-install and update use the same command — `init` is idempotent. **Run the CLI from the git
-tag, not from npm:**
+Both first-install and update use the same command — `init` is idempotent. Substitute `<latest-tag>`
+with the concrete `vX.Y.Z` from Step 1 and `<resolved-runtime>` with `opencode` or `both`. **Emit a
+single clean command** — no trailing comment, no `&&`, no redirect: that exact form is what the entry-gate
+allowlists, and any extra token re-triggers the anti-forgery block. **Run the CLI from the git tag, not
+from npm:**
 
 ```bash
-npx -y "github:orobsonn/claude-harness#<latest-tag>" init --target <resolved-runtime>   # opencode | both
+npx -y "github:orobsonn/claude-harness#<latest-tag>" init --target <resolved-runtime>
 ```
 
 > **Why the git tag, not `@orobsonn/claude-harness@latest`:** the npm-published version lags the repo
@@ -81,21 +85,26 @@ npx -y "github:orobsonn/claude-harness#<latest-tag>" init --target <resolved-run
 > has the OpenCode shell. Only use the npm form once a release **≥ the tag with OpenCode support** is
 > published (`npx -y "@orobsonn/claude-harness@>=0.40.0" …` fails loud if it is not).
 
-This vendors the OpenCode shell into `.opencode/` (agents, skills, plugin, tools, `harness.routing.json`,
-`AGENTS.md`, `opencode.json`, `shared/`), stamps `.opencode/.harness-version`, and — with `both` — also
+This vendors the OpenCode shell into `.opencode/` — the framework-owned trees `agents/`, `command/`,
+`docs/`, `skills/`, `plugin/`, `tools/`, `hands/`, `rules/` plus `harness.routing.json`, `AGENTS.md`,
+`shared/` and `opencode.json` — stamps `.opencode/.harness-version`, and — with `both` — also
 refreshes the Claude shell in `.claude/`.
 
 **Non-clobber guarantees (per shell):** `MEMORY.md`/`kaizen.md` are seeded only if absent; `AGENTS.md`
-is merged between harness markers (project content preserved); an existing `opencode.json` is left
-untouched (harness config written beside it as `opencode.harness.json` for manual merge).
+is merged between harness markers (project content preserved); an existing `opencode.json` is updated
+in place, preserving the project's own settings and non-harness plugins (only stale harness autoload
+paths are stripped from `plugin[]`, since OpenCode auto-loads `.opencode/plugin/*.ts`).
 
 ---
 
 ## Step 3 — Reconcile and report
 
-- If the CLI wrote `opencode.harness.json` (the project already had an `opencode.json`), present the
-  diff in product-language, merge the harness config into the operator's config (never silently
-  overwrite their plugins/settings), then remove `opencode.harness.json`.
+- If the CLI wrote `opencode.harness.json`, the project's existing `opencode.json` could **not** be
+  parsed (invalid JSON, or not a JSON object) — the CLI refused to touch it and dropped the harness
+  config beside it for manual repair. Present the diff in product-language and hand the merge to the
+  operator — the lane cannot write files, and repairing a broken config unattended is exactly the
+  move that loses their settings. A valid `opencode.json` never produces this file: it is updated in
+  place.
 - Report **version before → after** and remind that the `.opencode/` changes must be **committed** so
   cloud routines see the new version.
 - Stop after the update and tell the operator to restart the session. Plugins already loaded in the
