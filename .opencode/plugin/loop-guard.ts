@@ -13,13 +13,15 @@ export async function createLoopGuardHooks(
       : process.cwd()
 
   const {
-    decideLoopGuard,
     applyReviewOutcome,
     classifyReviewBoundaryError,
+    decidePlanReviewRoundRail,
     reserveReviewAttempt,
-    throwIfLoopDenied,
     loopCounterKey,
   } = await import("./lib/loop-decide.mjs")
+  const { decideReviseNudge } = await import("./lib/revise-nudge.mjs")
+  const { decideAdversaryNudge } = await import("./lib/adversary-nudge.mjs")
+  const { dedupeByType, obsAppend } = await import("./lib/obs-emit.mjs")
   const { withGateStateLock } = await import("./lib/gate-state.mjs")
   const { reviewAgentIdentity } = await import("../agents/review-catalog.mjs")
   const { gateStatePath } = await import("../shared/lib/path-helpers.mjs")
@@ -29,7 +31,7 @@ export async function createLoopGuardHooks(
     finalizeHostDualMerge,
   } = await import("./lib/dual-merge.mjs")
   const { extractSubagentType, isTaskTool } = await import("./lib/dual-enforcement.mjs")
-  const { applyAgentDispatchOutcome } = await import("../shared/lib/agent-retry.mjs")
+  const { applyAgentDispatchOutcome, applyGateBlockedDispatch } = await import("../shared/lib/agent-retry.mjs")
   const { decideCallOutcomeOnce } = await import("../shared/lib/agent-retry-call.mjs")
   const { parseTaskDispatchIdentity } = await import("./lib/task-dispatch-identity.mjs")
   const { isDeliveryRole } = await import("./lib/roles.mjs")
@@ -81,12 +83,28 @@ export async function createLoopGuardHooks(
    */
   const callOutcomes = new Map<string, "success" | "failure">()
 
+  /**
+   * Raw plan-reviewer dispatch attempts per session (process-local, mirrors callOutcomes above).
+   * Backs the #482 round-rail — deliberately NOT gate-state (no lock, no cross-restart survival):
+   * it counts DISPATCH ATTEMPTS, unlike reserveReviewAttempt's persisted, epoch-scoped
+   * plan_review_count (useful-outcome accounting), so a review-cap epoch reopen must never reset it.
+   */
+  const planReviewDispatchCounts = new Map<string, number>()
+
+  function nextPlanReviewDispatchCount(sessionID: string): number {
+    const next = (planReviewDispatchCounts.get(sessionID) ?? 0) + 1
+    planReviewDispatchCounts.set(sessionID, next)
+    return next
+  }
+
   function recordAgentRetry(
     sessionID: string,
     callID: string,
     role: string,
     taskId: string,
     outcome: "success" | "failure",
+    failureClass?: string,
+    rawError?: unknown,
   ) {
     if (!sessionID || !callID || !role || !isHarnessTaskRole(role)) return
     const dedupeKey = `${sessionID}::${callID}`
@@ -94,8 +112,19 @@ export async function createLoopGuardHooks(
     if (!decision.apply || !decision.outcome) return
     const sp = statePathFor(sessionID)
     if (!sp) return
+    // A harness-internal deny means the agent never ran: it is the dispatcher's precondition
+    // that failed, not the agent. Charging it to the agent's K=3 quality budget bans an
+    // innocent agent for the rest of the feature. Bounded separately instead.
+    const gateBlocked = failureClass === "gate_blocked"
     withGateStateLock(sp, (state) => {
       let next = state
+      if (gateBlocked) {
+        return applyGateBlockedDispatch(next, {
+          role,
+          taskId,
+          reason: typeof rawError === "string" ? rawError : (rawError as { message?: string })?.message,
+        }).state
+      }
       // If after-hook already reset the counter (false success), re-apply failure once.
       if (decision.undoSuccess) {
         next = applyAgentDispatchOutcome(next, { role, taskId, outcome: "failure" }).state
@@ -117,7 +146,7 @@ export async function createLoopGuardHooks(
     const taskId = taskIdOf(args)
     // Unified K=3: count once per callId (error event and after-hook may both fire).
     if (failureClass || rawError) {
-      recordAgentRetry(sessionID, callID, sub, taskId, "failure")
+      recordAgentRetry(sessionID, callID, sub, taskId, "failure", failureClass, rawError)
     } else if (sub) {
       recordAgentRetry(sessionID, callID, sub, taskId, "success")
     }
@@ -150,6 +179,49 @@ export async function createLoopGuardHooks(
       return outcome.state
     })
     if (!result.ok) throw new Error(`[loop-guard] ${result.reason}`)
+    // Deterministic continuation nudge: a REVISE verdict is supposed to keep every writing hand
+    // waiting (prose + orchestration discipline as of #483 — nothing in the dispatch gate itself
+    // blocks on it anymore), so the loop only advances if the orchestrator re-dispatches the
+    // plan-reviewer instead of a writing hand. Injected on the metadata channel (the one OC
+    // actually delivers) strictly AFTER the verdict is persisted.
+    try {
+      const nudge = decideReviseNudge({ state: result.state, subagentType: sub })
+      if (nudge.action === "inject" && output != null && typeof output === "object") {
+        if (!output.metadata || typeof output.metadata !== "object") output.metadata = {}
+        output.metadata.revise_nudge = nudge.context
+      }
+    } catch {
+      /* fail-open — a nudge never blocks review accounting */
+    }
+    // Same channel, the spec phase's own loop: acceptance of a spec-adversary pass had no
+    // definition in code, so it behaved like a coin flip — one session stamped after round 1, the
+    // next re-attacked to the cap and froze before the planner ever ran.
+    try {
+      const nudge = decideAdversaryNudge({ state: result.state, subagentType: sub, taskId })
+      if (nudge.action === "inject" && output != null && typeof output === "object") {
+        if (!output.metadata || typeof output.metadata !== "object") output.metadata = {}
+        output.metadata.adversary_nudge = nudge.context
+      }
+      // With no deterministic cap, prose is the whole stop mechanism — and prose nobody records
+      // fails exactly like prose nobody obeys. Persist the escalation and emit it on the
+      // observability feed so an ignored one is visible to the operator instead of invisible.
+      if (nudge.action === "inject" && nudge.kind === "escalate") {
+        const round = typeof result.state.adversary_loop_count === "number" ? result.state.adversary_loop_count : 0
+        const reportHash = typeof result.state.primary_review_last_report_hash === "string" ? result.state.primary_review_last_report_hash : ""
+        withGateStateLock(sp, (prev) => {
+          const already = prev.spec_adversary_escalation as Record<string, unknown> | undefined
+          if (already && already.report_hash === reportHash && already.round === round) return prev
+          return { ...prev, spec_adversary_escalation: { round, report_hash: reportHash, at: new Date().toISOString() } }
+        })
+        try {
+          obsAppend({ type: "spec-adversary-escalated", round }, { dedupe: dedupeByType })
+        } catch {
+          /* observability is advisory */
+        }
+      }
+    } catch {
+      /* fail-open — a nudge never blocks review accounting */
+    }
     // Fail-open: merge artifact is audit trail; gate dual_status / plan_verdict already sealed.
     if (mergeIntent) {
       try {
@@ -184,6 +256,24 @@ export async function createLoopGuardHooks(
       if (!identity) return
       const key = loopCounterKey(sub)
 
+      if (key === "plan_review_count") {
+        // Orchestrator-facing round-rail (#482): counts EVERY plan-reviewer dispatch ATTEMPT,
+        // decoupled from reserveReviewAttempt's own reservation-slot accounting below (a separate,
+        // already-enforced review-budget concern this issue does not touch — reclassifying a round
+        // as "focused verification" cannot dodge this count either, mirroring Claude Code
+        // entry-gate.mjs's Fix C). The DENY branch is decided and thrown HERE (the runtime's
+        // "tool.execute.before" output type is `{ args }` — no metadata field exists on it, so a
+        // throw is the only channel this hook can actually surface). The WARN message is decided
+        // from the SAME counter but injected in "tool.execute.after" below, where `output.metadata`
+        // really exists on the wire — writing it here would silently vanish, exactly the "dead
+        // string nobody reads" bug this issue set out to fix.
+        const dispatchCount = nextPlanReviewDispatchCount(sessionID)
+        const roundRail = decidePlanReviewRoundRail({ subagentType: sub, count: dispatchCount })
+        if (roundRail.decision === "deny") {
+          throw new Error(roundRail.reason)
+        }
+      }
+
       const sp = statePathFor(sessionID)
       if (!sp) return
 
@@ -200,21 +290,24 @@ export async function createLoopGuardHooks(
         return transition.ok ? transition.state : { ok: false, reason: transition.reason }
       })
       if (!reserved.ok) throw new Error(`[loop-guard] ${reserved.reason}`)
-
-      if (key) {
-        const count = typeof reserved.state[key] === "number" ? reserved.state[key] as number : 0
-        const decision = decideLoopGuard({ subagentType: sub, count })
-        if (decision.decision === "deny") {
-        // reserveReviewAttempt is the slot authority; count-only deny applies only when no slot was reserved.
-          const callID = input?.callID ?? input?.callId ?? ""
-          const hasReservation = Array.isArray(reserved.state.review_inflight) && reserved.state.review_inflight.some((item: any) => item?.call_id === callID)
-          if (!hasReservation) throwIfLoopDenied(decision)
-        }
-      }
     },
 
     "tool.execute.after": async (input: any, output: any) => {
       if (!isTaskTool(input?.tool)) return
+      const sessionID = input?.sessionID ?? input?.sessionId ?? ""
+      const args = argsOf(input, output)
+      const sub = extractSubagentType(args)
+      // Round-rail warn (#482): the counter was already incremented in "tool.execute.before"
+      // above (same process-local Map, peeked here — never incremented twice); this hook is
+      // where `output.metadata` is a real, delivered field, unlike before's `{ args }`-only shape.
+      if (sessionID && loopCounterKey(sub) === "plan_review_count") {
+        const dispatchCount = planReviewDispatchCounts.get(sessionID) ?? 0
+        const roundRail = decidePlanReviewRoundRail({ subagentType: sub, count: dispatchCount })
+        if (roundRail.decision === "warn" && output != null && typeof output === "object") {
+          if (!output.metadata || typeof output.metadata !== "object") output.metadata = {}
+          output.metadata.loop_guard_warning = roundRail.reason
+        }
+      }
       persistOutcome(input, output)
     },
 

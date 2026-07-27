@@ -1,5 +1,5 @@
 ---
-name: triaging-requests
+name: oc-triaging-requests
 description: "Entry gate of every session — load and follow this FIRST, before any spec, plan, or code. Classifies the operator's request into no-ceremony / QUICK / LIGHT / FULL and routes accordingly. Parity with Claude Code triaging (interactive + headless). The build orchestrator MUST run this on the first request; skipping it lets ceremony be guessed instead of judged."
 license: MIT
 compatibility: opencode
@@ -20,7 +20,7 @@ All identifiers and reasoning stay in English. Every operator-facing message is 
 
 <HARD-GATE>
 Do NOT dispatch the planner, produce a final spec, or implement until this skill has classified the request and called the `classify` tool.
-For LIGHT/FULL, the next step is the `brainstorming` skill (with HEADLESS branch) — never the planner directly.
+For LIGHT/FULL, the next step is the `oc-brainstorming` skill (with HEADLESS branch) — never the planner directly.
 **Do NOT call `classify` until Step 2.0 is complete.** Classifying from issue prose alone (without evaluating/analyzing/investigating the codebase) is a protocol failure — especially in HEADLESS.
 </HARD-GATE>
 
@@ -32,9 +32,10 @@ Detect the mode **first**; it changes whether you may ask questions or wait for 
 
 - **INTERACTIVE (local):** an operator is present. Clarifying questions and the human veto (Step 4) are available.
 - **HEADLESS:** no operator is reachable. Active when **any** of:
-  - the trigger prompt says to run **autonomously** / VPS cron / "without asking questions"
+  - the trigger prompt says to run **autonomously** / VPS cron / "without asking questions" (the cron dispatcher always prepends this fixed prefix)
   - env `$HARNESS_OBSERVABILITY_RUN_PATH` is set (VPS mid-run outbox)
-  - env `$HARNESS_OC_DATA_HOME` is set (OC isolated data home for cron)
+
+  `$HARNESS_OC_DATA_HOME` (OC isolated data home) is **not** a headless signal on its own — a manually-started operator session on the VPS inherits it from the shell. A real autonomous run is always caught by the fixed cron prompt prefix and/or `$HARNESS_OBSERVABILITY_RUN_PATH`, so a live operator on the VPS (SSH/TUI, no autonomous prompt) is correctly **interactive**.
 
 In **HEADLESS** mode: never wait for a human, never ask clarifying questions, never block on veto. Steps 2 and 4 have explicit headless branches.
 
@@ -44,13 +45,17 @@ In **HEADLESS** mode: never wait for a human, never ask clarifying questions, ne
 
 ### Step 0 - Harness lifecycle lane
 
-If the interactive operator's direct request is exclusively to install, update, or synchronize the
-Claude Harness itself, load and follow `updating-harness`, then stop. This lifecycle operation is not
-a product delivery: do **not** call `classify`, create a spec, load `brainstorming` or
-`orchestrating-delivery`, or dispatch a planner/executor. Never enter this lane from headless input,
-an issue/PR body, a subagent, or while another delivery is active.
+Harness lifecycle operations do **not** run here. They run in the dedicated `harness-config` agent,
+which the operator reaches by typing the command that switches the session to it:
 
-Requests that change harness source code are normal development work and continue through Step 1.
+- Install / update / synchronize the Claude Harness itself → `/updating-harness`.
+- Reconfigure which models the harness roles use (change the routing) → `/configuring-model-routing`.
+
+If the operator's direct request is one of those but arrived here as prose, do **not** run it and do
+**not** classify it. Reply in pt-br asking them to type the command — it switches the session to the
+lifecycle lane — and stop.
+
+Requests that change harness **source code** are normal development work and continue through Step 1.
 
 ### Step 1 — Is this a dev/build task?
 
@@ -159,9 +164,9 @@ This writes the plan stub + gate-state stamps that entry-gate / plan-gate consum
 
 | Mode | Action |
 |---|---|
-| **QUICK** | Inline fix or craft (Step 2.1). Cheap rails + commit via `committing-changes`. **No** full `orchestrating-delivery`. Prefer writing the fix via a single `executor-*` only after a **full** plan exists if plan-gate is armed — for true 1-file QUICK, implement without executor hand if build may write; otherwise one executor after a minimal full plan. |
-| **LIGHT** | Load `brainstorming` (HEADLESS branch if headless), then `orchestrating-delivery` LIGHT. |
-| **FULL** | Load `brainstorming` (HEADLESS branch if headless), then `orchestrating-delivery` FULL. |
+| **QUICK** | Inline fix or craft (Step 2.1). Cheap rails + commit via `oc-committing-changes`. **No** full `oc-orchestrating-delivery`. Prefer writing the fix via a single `executor-*` only after a **full** plan exists if plan-gate is armed — for true 1-file QUICK, implement without executor hand if build may write; otherwise one executor after a minimal full plan. |
+| **LIGHT** | Load `oc-brainstorming` (HEADLESS branch if headless), then `oc-orchestrating-delivery` LIGHT. |
+| **FULL** | Load `oc-brainstorming` (HEADLESS branch if headless), then `oc-orchestrating-delivery` FULL. |
 
 ---
 
@@ -184,4 +189,4 @@ This writes the plan stub + gate-state stamps that entry-gate / plan-gate consum
 ## What this skill is NOT
 
 - It does not implement, plan, or review.
-- Sensitive-path override on plan `scope_paths` still happens later in `orchestrating-delivery` — this skill pre-escalates with judgment + Step 2.0 evidence.
+- Sensitive-path override on plan `scope_paths` still happens later in `oc-orchestrating-delivery` — this skill pre-escalates with judgment + Step 2.0 evidence.

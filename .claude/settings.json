@@ -57,7 +57,9 @@
       "Bash(tsc --noEmit:*)",
       "Bash(eslint:*)",
       "Bash(prettier:*)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(git push --force-with-lease:*)",
+      "Bash(git push * --force-with-lease:*)"
     ],
     "deny": [
       "Read(.env)",
@@ -73,7 +75,9 @@
       "Bash(git push * --force*)",
       "Bash(git push -f*)",
       "Bash(git push * -f*)",
-      "Bash(git clean -f*)"
+      "Bash(git clean -f*)",
+      "Bash(git push --force *)",
+      "Bash(git push * --force *)"
     ],
     "defaultMode": "acceptEdits"
   },
