@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "harnessVersion": "v0.50.0",
+  "harnessVersion": "v0.50.1",
   "owned": {
     "glob": "allow",
     "grep": "allow",
