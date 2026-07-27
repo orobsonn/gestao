@@ -3,3 +3,4 @@ plans/
 settings.local.json
 *.local.md
 .harness-version-check-cache
+state/

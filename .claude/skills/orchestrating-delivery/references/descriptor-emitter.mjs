@@ -5,8 +5,8 @@ import { isSafeFeatureId } from '../../../hooks/lib/gate-lib.mjs';
 import { readRunnerConfig as defaultReadRunnerConfig } from './runner-adapters.mjs';
 import { parseFlags, isDirectCli } from './cli-flags.mjs';
 import { appendEvent as defaultAppendEvent, readEvents as defaultReadEvents } from '../../../vps/obs-outbox.mjs';
-import { resolveHandModel } from '../../../../shared/lib/hand-model-ladder.mjs';
-import { normalizeSeverity, severityRank } from '../../../../shared/lib/severity.mjs';
+import { resolveHandModel } from '../../../shared/lib/hand-model-ladder.mjs';
+import { normalizeSeverity, severityRank } from '../../../shared/lib/severity.mjs';
 
 /**
  * @description Emits the spawn-hand descriptor object deterministically at freeze-commit,

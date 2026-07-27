@@ -33,7 +33,7 @@ import { captureResult, realGit, realTestRunner } from "./capture-hand.mjs";
 import { resolveHookCommand } from "./hand-config/resolve-hook-command.mjs";
 import { isSafeFeatureId } from "../../../hooks/lib/gate-lib.mjs";
 import { resolveRunnerAdapter, DEFAULT_RUNNER_ID } from "./runner-adapters.mjs";
-import { resolveHandModel, formatApprovedLadder } from "../../../../shared/lib/hand-model-ladder.mjs";
+import { resolveHandModel, formatApprovedLadder } from "../../../shared/lib/hand-model-ladder.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
