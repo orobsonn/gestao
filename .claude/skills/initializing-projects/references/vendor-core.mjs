@@ -53,6 +53,7 @@ import {
   normalizeOcVersionStamp as normalizeHarnessVersionStamp,
   readHarnessVersionStamp,
 } from "../../../shared/lib/opencode-config-migration.mjs";
+import { sweepRetiredDispatchCleanup } from "../../../shared/lib/active-dispatch-cleanup-migration.mjs";
 
 const HARNESS_START = "<!-- harness:start — managed by initializing-projects, do not edit inside -->";
 const HARNESS_END = "<!-- harness:end -->";
@@ -80,7 +81,7 @@ const FRAMEWORK_OWNED = ["agents", "skills", "rules", "hooks", "docs"];
 const FRAMEWORK_FILES = ["CLAUDE-HARNESS-MEMORY-MODEL.md"];
 
 /** OpenCode framework-owned dirs (overwritten on every vendor). */
-const OC_FRAMEWORK_OWNED = ["agents", "command", "docs", "skills", "plugin", "tools", "hands", "rules"];
+const OC_FRAMEWORK_OWNED = ["agents", "command", "docs", "skills", "plugin", "tools", "hands", "rules", "lib"];
 const OC_FRAMEWORK_FILES = ["harness.routing.json", "AGENTS.md"];
 
 // Opt-in add-on modules (siblings of core/, NOT framework-owned). Each is vendored ONLY when the
@@ -358,17 +359,11 @@ export function pinTargetRoot(targetDir) {
  * @description Rewrite monorepo `core/opencode/** → core/shared` imports to vendored
  * `.opencode/** → .opencode/shared` relative paths. Depth-aware; never produces absolute home paths.
  * @param {string} content
- * @param {string} relFromOpencodeRoot - e.g. `plugin/entry-gate.ts` or `plugin/lib/gate-state.mjs`
+ * @param {string} relFromOpencodeRoot - e.g. `plugin/entry-gate.ts` or `lib/gate-state.mjs`
  * @returns {string}
  */
 export function rewriteSharedImportsForVendor(content, relFromOpencodeRoot) {
   if (typeof content !== "string" || typeof relFromOpencodeRoot !== "string") return content;
-  // Source-checkout marker paths must target the vendored runtime after copy.
-  content = content.split("core/opencode/plugin/lib/mark-gate.mjs").join(".opencode/plugin/lib/mark-gate.mjs");
-  content = content.replace(
-    '  ".opencode/plugin/lib/mark-gate.mjs",\n  ".opencode/plugin/lib/mark-gate.mjs",',
-    '  ".opencode/plugin/lib/mark-gate.mjs",',
-  );
   const parts = relFromOpencodeRoot.replace(/\\/g, "/").split("/").filter(Boolean);
   const depth = Math.max(0, parts.length - 1);
   // monorepo: from core/opencode/<path>, shared is (depth+1) levels up then shared/
@@ -423,20 +418,28 @@ function copyOcTree(srcDir, destDir, relPrefix = "") {
 export function harnessOcPluginFiles() {
   return [
     "./.opencode/plugin/entry-gate.ts",
+    "./.opencode/plugin/lavish-command-gate.ts",
     "./.opencode/plugin/marker-authority.ts",
-    "./.opencode/plugin/ceremony-coordinator.ts",
     "./.opencode/plugin/plan-gate.ts",
     "./.opencode/plugin/planner-recovery.ts",
     "./.opencode/plugin/plan-write-gate.ts",
-    "./.opencode/plugin/loop-guard.ts",
     "./.opencode/plugin/reinject-state.ts",
     "./.opencode/plugin/version-check.ts",
-    "./.opencode/plugin/harvest-guard.ts",
     "./.opencode/plugin/obs-plan-write.ts",
     "./.opencode/plugin/obs-eye.ts",
     "./.opencode/plugin/obs-hand.ts",
     "./.opencode/plugin/agent-idle-nudge.ts",
+    "./.opencode/plugin/autonomy-controller.ts",
   ];
+}
+
+/** @description Required harness plugins that exist in source but are absent after vendoring. */
+export function missingHarnessOcPluginFiles(openCodeDir, targetDir) {
+  return harnessOcPluginFiles().filter((entry) => {
+    const rel = entry.replace(/^\.\/\.opencode\//, "");
+    const absentRetiredSource = OC_RETIRED_FILES.includes(rel) && !existsSync(join(openCodeDir, rel));
+    return !absentRetiredSource && !existsSync(join(targetDir, entry.replace(/^\.\//, "")));
+  });
 }
 
 /**
@@ -491,10 +494,14 @@ export function pluginsAreRelative(plugins) {
  * shape-check alone satisfies the gate without that operational risk.) When a tier-2 migration
  * actually removes a retired key, the pre-migration file is preserved once at
  * `opencode.json.pre-migration.bak`.
+ * Issue #441: when an existing file needs no semantic mutation (plugin[] already clean of harness
+ * autoload paths AND permission migration is a no-op including key order), skip the write entirely
+ * and return `"unchanged"` so project formatters (Biome/Prettier) are not destroyed by a cosmetic
+ * `JSON.stringify(..., null, 2)` rewrite. Real mutations still rewrite with the canonical indent.
  * @param {string} openCodeDir - source core/opencode
  * @param {string} targetDir - project root
  * @param {string} [version] - harness version currently being vendored (stamped into the manifest)
- * @returns {string} status
+ * @returns {string} status — `"created"` | `"unchanged"` | update/repair strings
  */
 export function writeOpencodeConfig(openCodeDir, targetDir, version) {
   const example = join(openCodeDir, "opencode.json.example");
@@ -527,7 +534,10 @@ export function writeOpencodeConfig(openCodeDir, targetDir, version) {
   // preserving every operator top-level customization untouched.
   let existing = cfg;
   let existingRaw = null;
+  /** @type {Record<string, unknown> | null} pre-mutation snapshot for #441 no-op detection */
+  let originalSnapshot = null;
   if (wasPresent) {
+    // Read bytes first (#441) — only this string can prove byte-identity after a no-op path.
     existingRaw = readFileSync(dest, "utf8");
     try {
       existing = JSON.parse(existingRaw);
@@ -537,6 +547,8 @@ export function writeOpencodeConfig(openCodeDir, targetDir, version) {
       writeFileSync(join(targetDir, "opencode.harness.json"), `${JSON.stringify(cfg, null, 2)}\n`);
       return "invalid existing config → wrote opencode.harness.json for manual repair";
     }
+    // Snapshot BEFORE plugin strip / migration so we can detect a true no-op vs cosmetic rewrite.
+    originalSnapshot = JSON.parse(JSON.stringify(existing));
     // Never re-inject harness paths into plugin[] — OC auto-loads .opencode/plugin/*.ts
     existing.plugin = Array.isArray(existing.plugin)
       ? existing.plugin.filter((entry) => typeof entry === "string" && !isHarnessAutoloadPluginPath(entry))
@@ -544,12 +556,16 @@ export function writeOpencodeConfig(openCodeDir, targetDir, version) {
   }
 
   let manifest = null;
+  let existingManifestRaw = null;
   if (existsSync(manifestPath)) {
     try {
-      const parsed = JSON.parse(readFileSync(manifestPath, "utf8"));
+      existingManifestRaw = readFileSync(manifestPath, "utf8");
+      const parsed = JSON.parse(existingManifestRaw);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) manifest = parsed;
+      else existingManifestRaw = null;
     } catch {
       manifest = null;
+      existingManifestRaw = null;
     }
   }
   const previousHarnessVersionStamp = existsSync(versionPath)
@@ -574,22 +590,48 @@ export function writeOpencodeConfig(openCodeDir, targetDir, version) {
   const removedEntries = migrated.report.filter((r) => r.action === "removed-retired");
   const keptEntries = migrated.report.filter((r) => r.action === "kept-custom");
 
+  const nextConfigText = `${JSON.stringify(migrated.config, null, 2)}\n`;
+  const nextManifestText = `${JSON.stringify(migrated.manifest, null, 2)}\n`;
+
+  // #441: skip rewriting opencode.json when nothing semantic changed — including permission key
+  // order (last-match-wins). Object JSON.stringify is order-sensitive; byte equality covers the
+  // already-canonical file; structural equality covers Biome/Prettier-formatted equivalents.
+  const configUnchanged =
+    wasPresent &&
+    originalSnapshot !== null &&
+    existingRaw !== null &&
+    (existingRaw === nextConfigText ||
+      JSON.stringify(originalSnapshot) === JSON.stringify(migrated.config));
+  const manifestUnchanged = existingManifestRaw !== null && existingManifestRaw === nextManifestText;
+
   // Rollback layer 2 (layer 1 is git itself): once, only when a tier-2 ledger match actually
   // dropped something — preserves the exact pre-migration bytes, never overwritten by a later run.
-  if (wasPresent && migrated.tier === 2 && removedEntries.length > 0 && existingRaw !== null && !existsSync(backupPath)) {
+  if (
+    wasPresent &&
+    !configUnchanged &&
+    migrated.tier === 2 &&
+    removedEntries.length > 0 &&
+    existingRaw !== null &&
+    !existsSync(backupPath)
+  ) {
     writeFileSync(backupPath, existingRaw);
   }
 
-  const temp = `${dest}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(migrated.config, null, 2)}\n`);
-  renameSync(temp, dest);
+  if (!configUnchanged) {
+    const temp = `${dest}.${process.pid}.tmp`;
+    writeFileSync(temp, nextConfigText);
+    renameSync(temp, dest);
+  }
 
   mkdirSync(ocDir, { recursive: true });
-  const manifestTemp = `${manifestPath}.${process.pid}.tmp`;
-  writeFileSync(manifestTemp, `${JSON.stringify(migrated.manifest, null, 2)}\n`);
-  renameSync(manifestTemp, manifestPath);
+  if (!manifestUnchanged) {
+    const manifestTemp = `${manifestPath}.${process.pid}.tmp`;
+    writeFileSync(manifestTemp, nextManifestText);
+    renameSync(manifestTemp, manifestPath);
+  }
 
   if (!wasPresent) return "created";
+  if (configUnchanged) return "unchanged";
   if (removedEntries.length === 0 && keptEntries.length === 0) {
     return "updated existing opencode.json plugins (stripped harness autoload paths)";
   }
@@ -789,9 +831,81 @@ export function preflightOpenCodeVendor(coreDir, targetDir) {
  * Exact relative paths ONLY (never a directory or a glob) — this must never risk deleting a
  * user's own local plugin placed alongside the harness ones in the same auto-load directory.
  */
-const OC_RETIRED_FILES = [
+export const OC_RETIRED_FILES = [
   "plugin/command-resolver.ts",
   "plugin/lib/command-resolver.mjs",
+  "agents/executor-high-spawn.md",
+  "agents/executor-low-spawn.md",
+  "agents/executor-medium-spawn.md",
+  "agents/sniper-high-spawn.md",
+  "agents/sniper-low-spawn.md",
+  "agents/sniper-medium-spawn.md",
+  "agents/test-author-spawn.md",
+  "plugin/loop-guard.ts",
+  "plugin/lib/dual-enforcement.mjs",
+  "plugin/lib/dual-enforcement.test.mjs",
+  "plugin/lib/dual-merge.mjs",
+  "plugin/lib/dual-merge.test.mjs",
+  "plugin/lib/dual-nudge.mjs",
+  "plugin/lib/marker-seal.mjs",
+  "plugin/lib/marker-security.test.mjs",
+  "plugin/lib/mark-gate.mjs",
+  "skills/orchestrating-delivery/dual-runtime.mjs",
+  "skills/orchestrating-delivery/dual-runtime.test.mjs",
+  "plugin/lib/gate-state.mjs",
+  "plugin/lib/entry-decide.mjs",
+  "plugin/lib/dispatch-scope.mjs",
+  "plugin/lib/hand-records.mjs",
+  "plugin/lib/planner-state.mjs",
+  "plugin/lib/obs-emit.mjs",
+  "plugin/lib/plan-hash.mjs",
+  "plugin/lib/planner-artifact.mjs",
+  "plugin/lib/planner-fallback-config.mjs",
+  "lib/planner-fallback-config.mjs",
+  "plugin/lib/regate-arm.mjs",
+  "plugin/lib/regate-arm.test.mjs",
+  "agents/planner-fallback.md",
+  "plugin/lib/roles.mjs",
+  "plugin/lib/task-dispatch-identity.mjs",
+  "plugin/lib/second-eye-authority.mjs",
+  "plugin/lib/second-eye-authority.test.mjs",
+  "plugin/second-eye-coordinator.ts",
+  "plugin/second-eye-coordinator.test.mjs",
+  "skills/orchestrating-delivery/second-eye-runtime.mjs",
+  "skills/orchestrating-delivery/second-eye-runtime.test.mjs",
+  "plugin/lib/loop-decide.mjs",
+  "plugin/lib/plan-and-loop-decide.test.mjs",
+  "plugin/review-guard.ts",
+  "plugin/lib/review-accounting.test.mjs",
+  "plugin/lib/adversary-nudge.mjs",
+  "plugin/lib/adversary-nudge.test.mjs",
+  "plugin/lib/revise-nudge.mjs",
+  "plugin/lib/revise-nudge.test.mjs",
+  "plugin/lib/review-restart.mjs",
+  "skills/orchestrating-delivery/skill-plan-review-budget.test.mjs",
+  "skills/orchestrating-delivery/skill-primary-failure-cap.test.mjs",
+  "shared/lib/agent-retry.mjs",
+  "shared/lib/agent-retry.test.mjs",
+  "shared/lib/agent-retry-call.mjs",
+  "shared/lib/agent-retry-call.test.mjs",
+  "plugin/ceremony-coordinator.ts",
+  "plugin/ceremony-coordinator.test.mjs",
+  "skills/orchestrating-delivery/ceremony-runtime.mjs",
+  "skills/orchestrating-delivery/ceremony-runtime.test.mjs",
+  "plugin/lib/scope-runtime-composition.mjs",
+  "plugin/lib/bound-plan.mjs",
+  "plugin/lib/bound-plan.test.mjs",
+  "plugin/lib/obs-test-isolation.mjs",
+  "plugin/lib/obs-test-isolation.test.mjs",
+  "plugin/eyes-permission-lockdown.test.mjs",
+  "skills/orchestrating-delivery/skill-regate-stop-predicate.test.mjs",
+  "skills/orchestrating-delivery/skill-regate-stagnation-ceiling.test.mjs",
+  "skills/orchestrating-delivery/skill-regate-deadlock-escape.test.mjs",
+  "plugin/harvest-guard.ts",
+  "plugin/lib/harvest-findings.mjs",
+  "plugin/lib/agent-catalog-health.mjs",
+  "plugin/lib/ceremony-binding.mjs",
+  "plugin/lib/ceremony-transition.mjs",
 ];
 
 /**
@@ -809,12 +923,15 @@ function existsWithExactCase(dir, name) {
 }
 
 /**
- * @description Delete each `OC_RETIRED_FILES` entry under `ocDir`, but only on an exact
- * case-sensitive filename match — never a case-insensitive filesystem coincidence.
+ * @description Delete each `OC_RETIRED_FILES` entry missing from the source, but only on
+ * an exact case-sensitive destination match. Paths can be predeclared before source removal.
  * @param {string} ocDir
+ * @param {string} sourceOcDir
  */
-function pruneOcRetiredFiles(ocDir) {
+export function pruneOcRetiredFiles(ocDir, sourceOcDir) {
   for (const rel of OC_RETIRED_FILES) {
+    const source = join(sourceOcDir, rel);
+    if (existsWithExactCase(dirname(source), rel.split("/").pop())) continue;
     const abs = join(ocDir, rel);
     if (existsWithExactCase(dirname(abs), rel.split("/").pop())) rmSync(abs, { force: true });
   }
@@ -843,7 +960,8 @@ export function vendorOpenCode({ coreDir, targetDir, version, stampDate }) {
     const text = readFileSync(src, "utf8");
     writeFileSync(join(ocDir, file), rewriteSharedImportsForVendor(text, file));
   }
-  pruneOcRetiredFiles(ocDir);
+  pruneOcRetiredFiles(ocDir, openCodeDir);
+  sweepRetiredDispatchCleanup(targetDir);
 
   // Runtime shared libs (plugins import via rewritten relative paths)
   if (existsSync(sharedDir)) {
@@ -859,10 +977,7 @@ export function vendorOpenCode({ coreDir, targetDir, version, stampDate }) {
     ? join(targetDir, "opencode.harness.json")
     : join(targetDir, "opencode.json");
   // Harness plugins are auto-loaded from disk (.opencode/plugin/*) — not listed in plugin[].
-  const missingHarness = harnessOcPluginFiles().filter((entry) => {
-    const rel = entry.replace(/^\.\//, "");
-    return !existsSync(join(targetDir, rel));
-  });
+  const missingHarness = missingHarnessOcPluginFiles(openCodeDir, targetDir);
   if (missingHarness.length > 0) {
     fail(`FATAL — harness plugin files missing on disk (OC auto-load): ${missingHarness[0]}`);
   }

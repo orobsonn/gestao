@@ -1,7 +1,30 @@
 {
   "version": 1,
-  "harnessVersion": "v0.50.1",
+  "harnessVersion": "v0.53.7",
   "owned": {
+    "edit": {
+      "*": "allow",
+      ".env": "deny",
+      ".env.*": "deny",
+      "**/.env": "deny",
+      "**/.env.*": "deny",
+      ".dev.vars": "deny",
+      "**/.dev.vars": "deny",
+      "~/.ssh/**": "deny",
+      "~/.aws/**": "deny",
+      ".opencode/plans/.state/**": "deny"
+    },
+    "read": {
+      "*": "allow",
+      ".env": "deny",
+      ".env.*": "deny",
+      "**/.env": "deny",
+      "**/.env.*": "deny",
+      ".dev.vars": "deny",
+      "**/.dev.vars": "deny",
+      "~/.ssh/**": "deny",
+      "~/.aws/**": "deny"
+    },
     "glob": "allow",
     "grep": "allow",
     "list": "allow",
@@ -13,7 +36,7 @@
     "lsp": "allow",
     "external_directory": "allow",
     "bash": {
-      "*": "ask",
+      "*": "allow",
       "npx tsc --noEmit": "allow",
       "npx -y \"github:orobsonn/claude-harness#v*\" init --target opencode": "allow",
       "npx -y \"github:orobsonn/claude-harness#v*\" init --target claude": "allow",
@@ -36,8 +59,6 @@
       "eslint*": "allow",
       "prettier*": "allow",
       "node*": "allow",
-      "node .opencode/plugin/lib/mark-gate.mjs *": "allow",
-      "node core/opencode/plugin/lib/mark-gate.mjs *": "allow",
       "git status*": "allow",
       "git log*": "allow",
       "git diff*": "allow",
@@ -83,6 +104,15 @@
       "git push -f*": "deny",
       "git push * -f*": "deny",
       "git clean -f*": "deny",
+      "rm -r*": "deny",
+      "rm -R*": "deny",
+      "rm -fr*": "deny",
+      "rm --recursive*": "deny",
+      "node*.opencode/plans/.state/*": "deny",
+      "python*.opencode/plans/.state/*": "deny",
+      "sed *.opencode/plans/.state/*": "deny",
+      "tee *.opencode/plans/.state/*": "deny",
+      "rm *.opencode/plans/.state/*": "deny",
       "git push --force-with-lease*": "allow",
       "git push * --force-with-lease*": "allow"
     }

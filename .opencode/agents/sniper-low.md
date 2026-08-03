@@ -1,8 +1,11 @@
 ---
-description: Surgical fix for LOW-severity defects (typo, naming, dead code, cosmetic). ollama-cloud/gemma4:31b. Minimum delta only, no new files.
-mode: subagent
-model: ollama-cloud/gemma4:31b
+description: Surgical fix for LOW-severity defects (typo, naming, dead code, cosmetic). OpenAI Luna. Minimum delta only, no new files.
+mode: all
+model: openai/gpt-5.6-luna
 temperature: 0.0
+steps: 80
+tools:
+  task: false
 permission:
   classify: deny
   edit: allow

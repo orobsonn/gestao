@@ -19,9 +19,11 @@ Announce at start (pt-br): "Analisando o pedido para escolher a cerimônia certa
 All identifiers and reasoning stay in English. Every operator-facing message is **pt-br, product-language**.
 
 <HARD-GATE>
-Do NOT dispatch the planner, produce a final spec, or implement until this skill has classified the request and called the `classify` tool.
+Do NOT dispatch the planner, produce a final spec, or implement until this skill has finished routing.
+- **no-ceremony (chat/read):** answer and stop — **never** call `classify` (CC parity; a stamp must not pin `feature_id`).
+- **Delivery (QUICK/LIGHT/FULL):** call the `classify` tool only after Step 2.0; then proceed.
 For LIGHT/FULL, the next step is the `oc-brainstorming` skill (with HEADLESS branch) — never the planner directly.
-**Do NOT call `classify` until Step 2.0 is complete.** Classifying from issue prose alone (without evaluating/analyzing/investigating the codebase) is a protocol failure — especially in HEADLESS.
+**Do NOT call `classify` until Step 2.0 is complete** on a delivery path. Classifying from issue prose alone (without evaluating/analyzing/investigating the codebase) is a protocol failure — especially in HEADLESS.
 </HARD-GATE>
 
 ---
@@ -31,13 +33,22 @@ For LIGHT/FULL, the next step is the `oc-brainstorming` skill (with HEADLESS bra
 Detect the mode **first**; it changes whether you may ask questions or wait for a human.
 
 - **INTERACTIVE (local):** an operator is present. Clarifying questions and the human veto (Step 4) are available.
+- **Autonomy directive — AUTONOMOUS (local):** the operator is present but explicitly says to proceed autonomously — for example
+  "sem parar", "sem me perguntar", "siga autonomamente", or "siga a implementacao". The native
+  autonomy controller persists `autonomy_directive: enabled` in session gate-state from the operator
+  message itself; retain it in the runtime spec/decision ledger too. Do not ask about engineering. The **only** permitted
+  question is an unresolved choice that changes the observable product behavior or contract. This is not
+  HEADLESS: communicate progress normally, but do not wait for a reply.
 - **HEADLESS:** no operator is reachable. Active when **any** of:
   - the trigger prompt says to run **autonomously** / VPS cron / "without asking questions" (the cron dispatcher always prepends this fixed prefix)
   - env `$HARNESS_OBSERVABILITY_RUN_PATH` is set (VPS mid-run outbox)
 
   `$HARNESS_OC_DATA_HOME` (OC isolated data home) is **not** a headless signal on its own — a manually-started operator session on the VPS inherits it from the shell. A real autonomous run is always caught by the fixed cron prompt prefix and/or `$HARNESS_OBSERVABILITY_RUN_PATH`, so a live operator on the VPS (SSH/TUI, no autonomous prompt) is correctly **interactive**.
 
-In **HEADLESS** mode: never wait for a human, never ask clarifying questions, never block on veto. Steps 2 and 4 have explicit headless branches.
+In **AUTONOMOUS** or **HEADLESS** mode: never wait for a human, never ask clarifying questions about
+engineering, and never block on veto. If the issue/spec leaves an observable product choice unresolved,
+ask it in AUTONOMOUS or record it for asynchronous resolution in HEADLESS. Steps 2 and 4 have explicit
+autonomous/headless branches.
 
 ---
 
@@ -61,7 +72,7 @@ Requests that change harness **source code** are normal development work and con
 
 Does the request require writing, changing, or deleting code or configuration?
 
-- **NO** (question, chat, clarification, reading, document review) → **no ceremony**. Answer directly and stop.
+- **NO** (question, chat, clarification, reading, document review) → **no ceremony**. Answer directly and **stop**. **Never** call `classify` for no-ceremony — a stamp would pin `feature_id` and block a later delivery feature in the same session.
 - **YES** → Step 2.0.
 
 ### Step 2.0 — Evaluate · analyze · investigate BEFORE classify (mandatory)
@@ -85,6 +96,11 @@ Does the request require writing, changing, or deleting code or configuration?
 ### Step 2 — Classify QUICK / LIGHT / FULL
 
 **INTERACTIVE:** classify only once you have enough clarity. **Ask clarifying questions until ambiguity is gone — do not guess.**
+
+**AUTONOMOUS:** classify deterministically from the trigger plus investigation. Choose the smallest
+reversible engineering path that preserves the same observable contract; decomposition, rails, tests,
+providers, configuration, and infrastructure are engineering, not questions. Ask only if the ambiguity
+changes what the product does for a user.
 
 Useful questions (ask only what is still unclear):
 - "Tem mais de um arquivo ou módulo envolvido?"
@@ -145,20 +161,20 @@ If the operator flags a concern → escalate, re-classify, proceed.
 
 ### Step 5 — Terminal: record classification (`classify` tool)
 
-After the final mode is confirmed (including any escalation), call as the **last action** of this skill:
+**Delivery modes only.** After the final mode is confirmed as **QUICK, LIGHT, or FULL** (including any escalation), call as the **last action** of this skill:
 
 ```
 classify({ mode, feature_id })
 ```
 
-- `mode`: `no-ceremony` | `QUICK` | `LIGHT` | `FULL`
+- `mode`: `QUICK` | `LIGHT` | `FULL` — **never** `no-ceremony` (Step 1 already stopped without classify)
 - `feature_id`: kebab-case slug from the request (e.g. `fix-capture-verified-marker`)
 
-This writes the plan stub + gate-state stamps that entry-gate / plan-gate consume. **Do not skip.**
+This writes the plan stub + gate-state stamps that entry-gate / plan-gate consume. **Do not skip on a delivery path.**
 
-**Once per session+feature.** Host `classify` is escalate-only after the first successful stamp: same mode is a no-op; downgrade (e.g. LIGHT→QUICK) and feature-switch are denied. **Never** re-call `classify` mid-delivery to “unstick” a review cap or provider error — that is QUICK laundering and delivery rails will deny the ship.
+**Once per delivery session+feature.** Host `classify` is escalate-only after the first successful **delivery** stamp: same mode is a no-op; downgrade (e.g. LIGHT→QUICK) and feature-switch under QUICK/LIGHT/FULL are denied. A prior **no-ceremony** stamp (if any legacy path left one) does **not** pin `feature_id` — the next delivery classify may be `fresh` with a new feature. **Never** re-call `classify` mid-delivery to “unstick” a review cap or provider error — that is QUICK laundering and delivery rails will deny the ship.
 
-**HEADLESS note:** call `classify` for **QUICK, LIGHT, and FULL** (all delivery modes) so gate-state always has `mode` + `feature_id`.
+**HEADLESS note:** call `classify` for **QUICK, LIGHT, and FULL** only (delivery modes) so gate-state has `mode` + `feature_id`.
 
 ### Step 6 — Route
 
