@@ -1,8 +1,11 @@
 ---
-description: Surgical fix for HIGH-severity defects (race condition, security, data corruption, auth-bypass). ollama-cloud/kimi-k2.7-code. Minimum delta only, no new files.
-mode: subagent
-model: ollama-cloud/kimi-k2.7-code
+description: Surgical fix for HIGH-severity defects (race condition, security, data corruption, auth-bypass). OpenAI Terra. Minimum delta only, no new files.
+mode: all
+model: openai/gpt-5.6-terra
 temperature: 0.1
+steps: 80
+tools:
+  task: false
 permission:
   classify: deny
   edit: allow

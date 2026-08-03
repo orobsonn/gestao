@@ -20,7 +20,7 @@ export function validateRouting(config) {
       return { ok: false, reason: "config must be object" };
     }
 
-    const required = ["version", "roles", "constraints", "modelCapabilities"];
+    const required = ["version", "roles", "modelCapabilities"];
     for (const k of required) {
       if (!(k in config)) return { ok: false, reason: `missing ${k}` };
     }
@@ -32,7 +32,7 @@ export function validateRouting(config) {
     }
 
     const constraints = config.constraints;
-    if (typeof constraints !== "object" || constraints === null || Array.isArray(constraints)) {
+    if (constraints !== undefined && (typeof constraints !== "object" || constraints === null || Array.isArray(constraints))) {
       return { ok: false, reason: "constraints must be object" };
     }
 
@@ -48,11 +48,17 @@ export function validateRouting(config) {
     const unknownRole = roleNames.find((role) => !REQUIRED_ROLES.includes(role));
     if (unknownRole) return { ok: false, reason: `unknown role ${unknownRole}` };
 
+    if (
+      roles.planner !== null
+      && typeof roles.planner === "object"
+      && !Array.isArray(roles.planner)
+      && Object.hasOwn(roles.planner, "fallback")
+    ) {
+      return { ok: false, reason: "planner fallback is retired; remove roles.planner.fallback and use the canonical planner" };
+    }
+
     for (const role of SIMPLE_ROLES) {
       if (!isModelRoute(roles[role])) return { ok: false, reason: `invalid model route on ${role}` };
-    }
-    if (roles.planner.fallback !== undefined && !isModelRoute(roles.planner.fallback)) {
-      return { ok: false, reason: "invalid fallback model route on planner" };
     }
     for (const role of TIERED_ROLES) {
       const tiers = roles[role]?.tiers;
@@ -61,14 +67,27 @@ export function validateRouting(config) {
       }
     }
 
+    const usesFamilies = REVIEW_ROLES.some((role) => roles[role]?.families !== undefined);
     for (const key of ["requireDualOn", "crossFamilyRoles"]) {
-      if (!isExactReviewRoleList(constraints[key])) {
+      if ((usesFamilies || constraints?.[key] !== undefined) && !isExactReviewRoleList(constraints?.[key])) {
         return { ok: false, reason: `${key} must contain exactly plan-reviewer and adversary` };
       }
     }
 
     for (const role of REVIEW_ROLES) {
       const r = roles[role];
+      if (isModelRoute(r)) {
+        if (r.families !== undefined) return { ok: false, reason: `mixed review route on ${role}` };
+        if (r.secondEyeModel !== undefined) {
+          if (typeof r.secondEyeModel !== "string" || !/^[^/\s]+\/\S+$/.test(r.secondEyeModel)) {
+            return { ok: false, reason: `invalid secondEyeModel on ${role}` };
+          }
+          if (r.secondEyeModel.split("/")[0] === r.model.split("/")[0]) {
+            return { ok: false, reason: `secondEyeModel provider must differ from model on ${role}` };
+          }
+        }
+        continue;
+      }
       const families = r.families;
       if (!families || typeof families !== "object" || Array.isArray(families)) {
         return { ok: false, reason: `missing families on ${role}` };
@@ -158,6 +177,9 @@ function collectModelEntries(value, entries = []) {
   }
   if (typeof value.model === "string") {
     entries.push({ model: value.model, reasoningEffort: value.reasoningEffort });
+  }
+  if (typeof value.secondEyeModel === "string") {
+    entries.push({ model: value.secondEyeModel, reasoningEffort: undefined });
   }
   for (const nested of Object.values(value)) collectModelEntries(nested, entries);
   return entries;
