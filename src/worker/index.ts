@@ -32,10 +32,14 @@ function d1AsDbLike(d1: D1Database): DbLike & BatchDbLike {
           if (params.length === 0) return stmt.run()
           return stmt.bind(...params).run()
         },
-        get(...params: unknown[]) {
+        async get(...params: unknown[]) {
           const stmt = d1.prepare(sql)
-          if (params.length === 0) return stmt.first()
-          return stmt.bind(...params).first()
+          const row =
+            params.length === 0
+              ? await stmt.first()
+              : await stmt.bind(...params).first()
+          // D1 first() yields null; DbLike uses undefined for missing rows.
+          return row ?? undefined
         },
         bind(...params: unknown[]) {
           const bound = d1.prepare(sql).bind(...params)
