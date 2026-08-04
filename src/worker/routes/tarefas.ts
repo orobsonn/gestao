@@ -360,6 +360,14 @@ export function registerTarefaRoutes(
         values.push(parsed.data.dono_id)
       }
 
+      // updated_at only when status actually changes — keeps feitas_7d as completion window, not activity
+      if (
+        parsed.data.status !== undefined &&
+        parsed.data.status !== existing.status
+      ) {
+        sets.push(`updated_at = datetime('now')`)
+      }
+
       if (sets.length > 0) {
         await Promise.resolve(
           db

@@ -29,4 +29,6 @@ Cloudflare Worker API (Hono) for auth, bootstrap, and platform provision.
 - **Parent delete with children:** experts (live campanhas) and campanhas (live tarefas) → atomic `UPDATE … AND NOT EXISTS (live children)` then **409** `{error:'Has children'}` if still live; tarefas have no children.
 - **Create under parent:** atomic `INSERT … SELECT` from live parent same-tenant (`deleted_at IS NULL`) — parent miss / soft-deleted / other-tenant → **404** Not found (no check-then-act race).
 - **PATCH:** Zod `.strict()` allowlist only; unknown keys → 400; `null` clears optional nullable fields (dates, dono_id); re-read after UPDATE.
+- **tarefas updated_at:** bump `updated_at = datetime('now')` only when `status` is present **and** differs from the live row (completion window for `feitas_7d`, not activity).
+- **Home route:** `GET /api/empresa/home` via `registerHomeRoutes` inside `createEmpresaApp`; any active member; membro fail-closed (empresa KPIs zero, `empresa_abertas=[]`, charts scoped to `dono=viewer`).
 - **IDs:** server `crypto.randomUUID()`; never trust client id on create. `created_by` on tarefas is session user id only.

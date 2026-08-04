@@ -16,6 +16,7 @@ import {
 import type { DbLike } from '../types.ts'
 import { registerCampanhaRoutes } from './campanhas.ts'
 import { registerExpertRoutes } from './experts.ts'
+import { registerHomeRoutes } from './home.ts'
 import { registerTarefaRoutes } from './tarefas.ts'
 
 const createMembroBodySchema = z.object({
@@ -141,6 +142,7 @@ export function createEmpresaApp(
   registerExpertRoutes(app, db)
   registerCampanhaRoutes(app, db)
   registerTarefaRoutes(app, db)
+  registerHomeRoutes(app, db)
 
   return app
 }

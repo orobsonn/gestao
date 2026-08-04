@@ -12,10 +12,11 @@ import {
 } from "./lib/shell-routes";
 import { AdminPlaceholder } from "./pages/AdminPlaceholder";
 import { ExpertsPlaceholder } from "./pages/ExpertsPlaceholder";
-import { HomePlaceholder } from "./pages/HomePlaceholder";
+import { HomePage } from "./pages/HomePage";
 import { LoginPage } from "./pages/LoginPage";
 import { MeuTrabalhoPlaceholder } from "./pages/MeuTrabalhoPlaceholder";
 import { PlatformPage } from "./pages/PlatformPage";
+import { TarefaDetailStub } from "./pages/TarefaDetailStub";
 import { useAuth } from "./providers/auth-provider";
 
 /**
@@ -52,9 +53,10 @@ export function App() {
           </RequireAuth>
         }
       >
-        <Route path="/" element={<HomePlaceholder />} />
+        <Route path="/" element={<HomePage />} />
         <Route path="/experts" element={<ExpertsPlaceholder />} />
         <Route path="/meu-trabalho" element={<MeuTrabalhoPlaceholder />} />
+        <Route path="/tarefas/:id" element={<TarefaDetailStub />} />
         <Route
           path="/admin"
           element={
