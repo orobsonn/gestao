@@ -1,4 +1,4 @@
-/** @description Auth HTTP routes: login, logout, me, active-empresa — hermetic via createAuthApp(db). */
+/** @description Auth HTTP routes: login, logout, me, active-empresa — hermetic via createAuthApp(db); /me clears stale active via clearActiveEmpresaIf. */
 
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'

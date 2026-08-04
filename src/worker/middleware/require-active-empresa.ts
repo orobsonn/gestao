@@ -15,6 +15,7 @@ export type ActiveEmpresaVariables = SessionVariables & {
 /**
  * @description Factory: after requireSession — 403 unless session active_empresa_id
  * has a non-deleted membership for the session user. Sets activeEmpresaId + membershipPapel.
+ * On stale/invalid active, clearActiveEmpresaIf clears stale active TOCTOU-safe before 403.
  */
 export function requireActiveEmpresa(
   db: DbLike,
