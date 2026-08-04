@@ -1,4 +1,4 @@
-/** @description Campanha tarefas list — status/dono filters, create dialog, nesting guard. */
+/** @description Campanha tarefas page — status/dono filters, create dialog, nesting guard. */
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Plus } from "lucide-react";
@@ -93,7 +93,7 @@ function formatPrazo(prazo: string | null): string {
 }
 
 /**
- * @description Tarefas list under /experts/:expertId/campanhas/:campanhaId with filters + create.
+ * @description Tarefas list under /experts/:expertId/campanhas/:campanhaId with filters, create, and nesting guard.
  */
 export function CampanhaTarefasPage() {
   const navigate = useNavigate();

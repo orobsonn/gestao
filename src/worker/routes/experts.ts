@@ -53,7 +53,7 @@ function asCount(value: unknown): number {
 /**
  * @description List live experts of a single empresa with open/late task counts.
  * Counts match home open-task predicates (LD-13): live = t.deleted_at IS NULL only;
- * abertas = status != feito; atrasadas = open + prazo IS NOT NULL AND prazo < date('now').
+ * abertas = status != feito; atrasadas = open set plus prazo IS NOT NULL AND prazo < date('now').
  * Join tarefas→campanhas→experts; do not filter campanhas.status.
  */
 async function listExperts(

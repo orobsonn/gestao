@@ -151,7 +151,8 @@ export type CreateMembroBody = {
 
 // ── UI contracts (pure) ────────────────────────────────────────────────────
 
-/** @description Primary Experts page heading — must stay exactly "Experts" for e2e. */
+/** @description Primary Experts page heading — must stay exactly "Experts" for e2e */
+
 export const EXPERTS_PAGE_HEADING = "Experts";
 
 /**
