@@ -15,6 +15,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+## [0.7.0] - 2026-08-04
+
+### Added
+
+- Telas Experts → Campanha → Tarefa (lista com contagens atrasadas/abertas, filtros status+dono)
+- Create de expert e campanha (admin); CRUD de tarefa para qualquer membro
+- Detalhe de tarefa com salvar e exclusão direta (sem modal)
+- Breadcrumb hierárquico no shell para a navegação de domínio
+- Contagens `abertas`/`atrasadas` em `GET /api/empresa/experts` (paridade com a home)
+- Suíte e2e de domínio (`tests/e2e/web-domain.spec.ts`)
+
+### Fixed
+
+- Typecheck estrito (`tsc -b`) nas telas de domínio
+
 ## [0.6.0] - 2026-08-04
 
 ### Added

@@ -12,7 +12,7 @@ const createExpertBodySchema = z.object({
   nome: z.string().min(1).max(200),
 })
 
-/** PATCH allowlist: nome only — reject unknown keys via strict. */
+/** @description PATCH allowlist: nome only — reject unknown keys via strict. */
 const patchExpertBodySchema = z
   .object({
     nome: z.string().min(1).max(200).optional(),
