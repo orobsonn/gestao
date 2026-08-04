@@ -1,4 +1,4 @@
-/** @description Campanha tarefas list — status/dono filters, create dialog, nesting guard. */
+/** @description Campanha tarefas page — status/dono filters, create dialog, nesting guard. */
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Plus } from "lucide-react";
