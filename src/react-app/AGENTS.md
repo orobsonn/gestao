@@ -13,4 +13,6 @@ SPA shell (Vite + React + shadcn/ui) for auth session UI and tenant navigation.
 - **/platform:** outside shell `RequireAuth` and outside blocking empresa picker; page self-gates.
 - **Empresa gate:** multi + null active → blocking picker under shell only; single + null → heal POST; zero memberships → shell OK.
 - **AuthProvider:** session state only — never render EmpresaPicker or unmount the router.
-- **Hermetic locks:** `tests/web-shell-*.test.mjs` via `node --experimental-strip-types --test`. Relative imports in pure libs use `.ts` suffix for Node ESM.
+- **Tenant page fetch:** key load effects on `me.active_empresa_id`; cancel stale in-flight responses before `setState` (Home pattern).
+- **Home lens:** pure `resolveHomeLens` in `lib/home-lens.ts` (admin Tudo|Só meu|Só empresa; membro personal-only).
+- **Hermetic locks:** `tests/web-shell-*.test.mjs` / `tests/web-home-*.test.mjs` via `node --experimental-strip-types --test`. Relative imports in pure libs use `.ts` suffix for Node ESM.

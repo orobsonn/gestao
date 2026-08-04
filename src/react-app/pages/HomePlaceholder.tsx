@@ -1,24 +1,9 @@
-/** @description Placeholder Home page until domain dashboard lands. */
-
-import {
-  Card,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+/** @description Deprecated — Home dashboard lives in HomePage; kept only to avoid stale imports. */
 
 /**
- * @description Temporary Home surface with pt-br title.
+ * @description No longer used. Prefer `HomePage` at `/`.
+ * @deprecated Use HomePage instead.
  */
 export function HomePlaceholder() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Home</CardTitle>
-        <CardDescription>
-          Dashboard da operação — em breve.
-        </CardDescription>
-      </CardHeader>
-    </Card>
-  );
+  return null;
 }

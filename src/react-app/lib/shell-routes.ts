@@ -14,11 +14,38 @@ export const SHELL_AUTH_PATHS = [
   "/admin",
 ] as const;
 
+/** @description Prefix for tarefa detail routes under the shell (`/tarefas/:id`). */
+export const TAREFA_DETAIL_PATH_PREFIX = "/tarefas/";
+
+/** @description Stub copy on the tarefa detail placeholder page. */
+export const TAREFA_DETAIL_STUB_MESSAGE = "Detalhe da tarefa — em breve";
+
+/** @description Back-link target from the tarefa detail stub to Home. */
+export const TAREFA_DETAIL_BACK_HREF = "/";
+
+/**
+ * @description Build the shell path for a tarefa detail stub: `/tarefas/${id}`.
+ */
+export function buildTarefaDetailPath(id: string): string {
+  return `${TAREFA_DETAIL_PATH_PREFIX}${id}`;
+}
+
 /**
  * @description True when path is a shell-auth-protected route (not platform).
+ * Exact SHELL_AUTH_PATHS plus parameterized `/tarefas/:id` detail routes.
  */
 export function isShellAuthPath(path: string): boolean {
-  return (SHELL_AUTH_PATHS as readonly string[]).includes(path);
+  if ((SHELL_AUTH_PATHS as readonly string[]).includes(path)) {
+    return true;
+  }
+  // `/tarefas/:id` — require a non-empty segment after the prefix
+  if (
+    path.startsWith(TAREFA_DETAIL_PATH_PREFIX) &&
+    path.length > TAREFA_DETAIL_PATH_PREFIX.length
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /**

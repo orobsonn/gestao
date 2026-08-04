@@ -25,6 +25,8 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 - [set-active-empresa-optimistic-gen](#set-active-empresa-optimistic-gen) — optimistic active_empresa_id + request generation; keep on 5xx; clear me on 401; lock picker clicks
 - [platform-spa-outside-shell](#platform-spa-outside-shell) — /platform outside shell RequireAuth and empresa picker; page self-gates super_admin
 - [shadcn-cn-not-utils](#shadcn-cn-not-utils) — shadcn cn helper at lib/cn.ts; components.json utils alias @/lib/cn; never lib/utils.ts
+- [status-transition-updated-at](#status-transition-updated-at) — tarefas.updated_at bumps only on real status change; feitas_7d is completion window not activity
+- [home-fetch-active-empresa](#home-fetch-active-empresa) — tenant SPA pages key fetch on me.active_empresa_id and cancel stale in-flight responses
 
 ---
 
@@ -177,3 +179,19 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 **Why:** AGENTS forbids generic `utils.ts`; shadcn CLI defaults to `@/lib/utils`.
 
 **How to apply:** Export `cn` from `src/react-app/lib/cn.ts`. Set `components.json` aliases.utils to `@/lib/cn`. Never create `lib/utils.ts`.
+
+---
+
+## status-transition-updated-at
+
+**Why:** Home KPI `feitas_7d` uses `date(updated_at)` as a completion window. Bumping `updated_at` on every PATCH (or no-op status re-save) turns the metric into an activity counter and lets old completions re-enter the 7-day window.
+
+**How to apply:** On `PATCH /api/empresa/tarefas/:id`, set `updated_at = datetime('now')` only when `status` is present **and** differs from the live row's current status. Titulo/notas/prazo/dono-only patches must not touch `updated_at`.
+
+---
+
+## home-fetch-active-empresa
+
+**Why:** After sidebar empresa switch, a mounted Home (or any tenant page) that fetched once on mount keeps the previous tenant's KPIs/lists; a late in-flight response can also overwrite the new tenant.
+
+**How to apply:** Key the load `useEffect` on `me.active_empresa_id`. Clear local data on change. Use a cancelled/generation flag so only the latest fetch may `setState`.
