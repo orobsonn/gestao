@@ -15,6 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+## [0.6.0] - 2026-08-04
+
+### Added
+
+- Home dashboard por papel (admin dual + toggle Tudo|Só meu|Só empresa; membro só Meu trabalho)
+- API `GET /api/empresa/home` com KPIs, gráficos e listas (atrasadas no topo)
+- Stub navegável de detalhe de tarefa (`/tarefas/:id`)
+- Seed e2e com tarefas de amostra e suíte Playwright da home
+
+### Changed
+
+- PATCH de tarefa só atualiza `updated_at` quando o status realmente muda (KPI feitas 7d)
+
 ## [0.5.0] - 2026-08-04
 
 ### Added
