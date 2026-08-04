@@ -15,6 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+## [0.4.0] - 2026-08-04
+
+### Added
+
+- API multi-tenant Expert → Campanha → Tarefa sob `/api/empresa/*` (isolamento por empresa ativa)
+- Só admin cria/edita/exclui expert e campanha; qualquer membro CRUD de tarefa com exclusão direta
+- Migration `0003`: campos opcionais de campanha (`data_inicio`, `data_fim`, `notas`)
+- Soft-delete com 409 se houver filhos vivos; DELETE idempotente no tombstone (sem oracle cross-tenant)
+- Suíte hermética de domínio (migrations, experts, campanhas, tarefas)
+
+### Changed
+
+- Migration `0002` vira stub no-op (coluna `active_empresa_id` já em `0001`); chain full-apply em testes
+
 ## [0.3.0] - 2026-08-04
 
 ### Added
