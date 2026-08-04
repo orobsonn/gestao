@@ -17,6 +17,9 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 - [session-active-empresa-pointer](#session-active-empresa-pointer) — sessions.active_empresa_id is a user-scoped nullable pointer (single-column FK), not a tenant-owned child; do not composite-FK it
 - [login-auto-select-one-membership](#login-auto-select-one-membership) — login sets active_empresa only when exactly one non-deleted membership; 0 or N>1 leaves null until POST active-empresa
 - [toctou-clear-active-empresa](#toctou-clear-active-empresa) — invalidate stale active_empresa with conditional UPDATE … AND active_empresa_id = expected, never blind NULL
+- [atomic-live-parent-insert](#atomic-live-parent-insert) — child create via INSERT…SELECT live same-tenant parent; never check-then-act; 0 changes → 404
+- [atomic-parent-soft-delete](#atomic-parent-soft-delete) — parent soft-delete UPDATE…AND NOT EXISTS live children; map 0 changes to 404/204/409
+- [soft-delete-no-existence-oracle](#soft-delete-no-existence-oracle) — own tombstone DELETE 204; other-tenant and never-existed share identical 404 body
 
 ---
 
@@ -105,3 +108,27 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 **Why:** Between “read stale active” and “clear it”, another request can switch to a valid house. Blind `SET NULL` wipes the concurrent switch.
 
 **How to apply:** Always `clearActiveEmpresaIf(db, rawToken, expectedEmpresaId)` — conditional UPDATE on token_hash + active_empresa_id = expected. Use on `/me` stale path and `requireActiveEmpresa` failure paths.
+
+---
+
+## atomic-live-parent-insert
+
+**Why:** Check-then-act (`SELECT` live parent, then `INSERT` child) races with concurrent parent soft-delete and leaves live children under tombstoned parents.
+
+**How to apply:** Create children with `INSERT…SELECT … FROM parent WHERE id=? AND empresa_id=? AND deleted_at IS NULL`. If `changes === 0`, return 404 (same body as unknown id). See `campanhas.ts` / `tarefas.ts` POST handlers.
+
+---
+
+## atomic-parent-soft-delete
+
+**Why:** Separate “count live children” then “soft-delete parent” races with concurrent child create and orphans hierarchy navigation.
+
+**How to apply:** One `UPDATE parent SET deleted_at=… WHERE … AND deleted_at IS NULL AND NOT EXISTS (live children)`. On 0 changes, re-read: missing → 404; tombstone → 204; live → 409 Has children. See `experts.ts` / `campanhas.ts` DELETE.
+
+---
+
+## soft-delete-no-existence-oracle
+
+**Why:** Returning 200 for “already deleted” on random UUIDs while 404 on other-tenant ids leaks whether a foreign id exists.
+
+**How to apply:** DELETE succeeds (204) only when a row exists for `(id, active_empresa_id)` including tombstones. Never-existed and other-tenant share identical 404 body. GET/PATCH of tombstones stay 404.

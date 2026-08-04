@@ -14,6 +14,9 @@ import {
   createMembroAsAdmin,
 } from '../services/create-membro.ts'
 import type { DbLike } from '../types.ts'
+import { registerCampanhaRoutes } from './campanhas.ts'
+import { registerExpertRoutes } from './experts.ts'
+import { registerTarefaRoutes } from './tarefas.ts'
 
 const createMembroBodySchema = z.object({
   name: z.string().min(1).max(200),
@@ -134,6 +137,10 @@ export function createEmpresaApp(
       }
     },
   )
+
+  registerExpertRoutes(app, db)
+  registerCampanhaRoutes(app, db)
+  registerTarefaRoutes(app, db)
 
   return app
 }

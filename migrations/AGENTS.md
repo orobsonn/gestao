@@ -13,6 +13,24 @@ D1 SQL migrations for the gestao multi-tenant schema.
 - **Timestamps:** ISO-ish TEXT via `datetime('now')`.
 - **Enums in SQL:** CHECK constraints are source of truth; TS mirrors live in `src/shared/domain/enums.ts` — keep them in lockstep.
 
+## Migration chain
+
+| File | Role |
+|------|------|
+| `0001_init.sql` | Full schema bootstrap (includes `sessions.active_empresa_id`). |
+| `0002_sessions_active_empresa.sql` | **No-op forward stub.** `active_empresa_id` was folded into 0001; kept so history stays monotonic for DBs that already recorded 0002. Do **not** `ADD COLUMN` again (duplicate column on fresh apply). |
+| `0003_campanha_optional_fields.sql` | Forward: `campanhas.data_inicio`, `data_fim` (nullable TEXT), `notas` (`TEXT NOT NULL DEFAULT ''`). |
+
+### Hermetic openDb rule (tests + local)
+
+Every connection that builds schema from this folder must:
+
+1. Open SQLite (e.g. `:memory:` or local file).
+2. `PRAGMA foreign_keys = ON` immediately after open.
+3. Apply **every** `migrations/*.sql` file, sorted **lexically by filename** (not a hand-picked subset).
+
+Skipping files or applying out of order breaks the chain contract locked by `tests/domain-migrations.test.mjs`.
+
 ## Hierarchy (v1)
 
 `Empresa → Expert → Campanha → Tarefa` only. No `projects` / `tasks` synonym tables.
