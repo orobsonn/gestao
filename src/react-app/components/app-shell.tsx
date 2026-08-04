@@ -49,7 +49,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             <ModeToggle />
           </div>
         </header>
-        <main className="flex flex-1 flex-col gap-4 p-4 md:p-6">{children}</main>
+        <main className="flex min-w-0 flex-1 flex-col gap-4 overflow-auto p-4 md:p-6">
+          {children}
+        </main>
       </SidebarInset>
     </SidebarProvider>
   );
