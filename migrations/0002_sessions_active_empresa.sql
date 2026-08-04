@@ -1,4 +1,6 @@
--- Forward: add sessions.active_empresa_id for multi-empresa session context.
--- Safe on existing D1 where 0001 already applied without this column.
+-- No-op forward stub.
+-- active_empresa_id was folded into 0001_init; do NOT ADD COLUMN again
+-- (duplicate column on fresh apply). Kept so migration history stays
+-- monotonic for DBs that already recorded 0002.
 
-ALTER TABLE sessions ADD COLUMN active_empresa_id TEXT REFERENCES empresas(id);
+SELECT 1;

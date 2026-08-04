@@ -1,0 +1,3 @@
+ALTER TABLE campanhas ADD COLUMN data_inicio TEXT;
+ALTER TABLE campanhas ADD COLUMN data_fim TEXT;
+ALTER TABLE campanhas ADD COLUMN notas TEXT NOT NULL DEFAULT '';

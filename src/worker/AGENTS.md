@@ -18,4 +18,15 @@ Cloudflare Worker API (Hono) for auth, bootstrap, and platform provision.
 - **Create membro:** new email → batch user(role=user) + membership; existing email already member → 409; existing other empresa → membership only, never change password_hash/salt. On UNIQUE race for new email: re-SELECT user + membership before mapping to 409. Result `created: true` only when a new user row was inserted.
 - **D1 adapter:** must implement `all()` for multi-row reads (memberships, membros list).
 - **Bootstrap:** secrets `SUPER_ADMIN_*` only; never wrangler.jsonc vars; no password overwrite; no promote of existing user; pre-hash email collision check; middleware only under `/api/*`.
-- **Hermetic tests:** export `createAuthApp(db)` / `createPlatformApp(db)` / `createEmpresaApp(db)` factories; node:sqlite + `0001_init.sql`.
+- **Hermetic tests:** export `createAuthApp(db)` / `createPlatformApp(db)` / `createEmpresaApp(db)` factories; node:sqlite + full migration chain (`migrations/*.sql` sorted lexically, `PRAGMA foreign_keys=ON`).
+
+## Domain CRUD (experts / campanhas / tarefas)
+
+- **Compose into `createEmpresaApp`:** each domain module exports `registerXRoutes(app, db)` and is wired inside `createEmpresaApp` — single `/api/empresa/*` surface; do not add parallel dispatch in `index.ts`.
+- **Tenant scope:** always from `sessions.active_empresa_id` via `requireActiveEmpresa` — never client-supplied empresa id.
+- **Authz:** experts/campanhas writes use `requireEmpresaAdmin`; tarefas are full CRUD for any member (no admin gate). Reads for all three: any active member.
+- **Soft-delete (LD-16 DELETE/GET split):** DELETE on own tombstone → **204** idempotent; GET/list/PATCH require `deleted_at IS NULL` → **404** `{error:'Not found'}`. Never-existed UUID and other-tenant id share the same 404 body (no existence oracle).
+- **Parent delete with children:** experts (live campanhas) and campanhas (live tarefas) → atomic `UPDATE … AND NOT EXISTS (live children)` then **409** `{error:'Has children'}` if still live; tarefas have no children.
+- **Create under parent:** atomic `INSERT … SELECT` from live parent same-tenant (`deleted_at IS NULL`) — parent miss / soft-deleted / other-tenant → **404** Not found (no check-then-act race).
+- **PATCH:** Zod `.strict()` allowlist only; unknown keys → 400; `null` clears optional nullable fields (dates, dono_id); re-read after UPDATE.
+- **IDs:** server `crypto.randomUUID()`; never trust client id on create. `created_by` on tarefas is session user id only.
