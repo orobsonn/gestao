@@ -88,6 +88,48 @@
       "HARNESS_REVIEW_ENABLED": "1"
     },
     "hooks": {
+      "PreToolUse": [
+        {
+          "matcher": "Agent",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/entry-gate.mjs"
+            }
+          ]
+        },
+        {
+          "matcher": "Bash",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/entry-gate.mjs"
+            },
+            {
+              "type": "command",
+              "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/lavish-command-gate.mjs"
+            }
+          ]
+        },
+        {
+          "matcher": "ScheduleWakeup",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/entry-gate.mjs"
+            }
+          ]
+        },
+        {
+          "matcher": "Write|Edit",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-write-gate.mjs"
+            }
+          ]
+        }
+      ],
       "PostToolUse": [
         {
           "matcher": "Bash",
