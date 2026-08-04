@@ -220,3 +220,4 @@ joins the chain — whichever comes first.
 | Folder | What lives there | See |
 |--------|------------------|-----|
 | migrations/ | D1 SQL multi-tenant schema + composite FK law | migrations/AGENTS.md |
+| src/worker/ | Worker API auth/session/bootstrap/platform | src/worker/AGENTS.md |

@@ -14,3 +14,4 @@ Implementation-free: what the term MEANS in the business, never which file imple
 | super_admin | Papel de plataforma no usuário (não é papel de membership); acima das empresas |
 | dono | Usuário opcional responsável por uma tarefa (`dono_id`); distinto de quem criou |
 | created_by | Usuário que criou a tarefa; obrigatório e imutável no sentido de autoria |
+| platform | Superfície de operação do super_admin da plataforma (provisionar empresas); distinta do app multi-tenant da empresa |

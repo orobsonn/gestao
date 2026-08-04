@@ -3,3 +3,8 @@
 # Ollama auth token used by `claude -p` with ANTHROPIC_BASE_URL=https://ollama.com.
 # NEVER commit the real value — .dev.vars must stay out of git.
 ANTHROPIC_AUTH_TOKEN=
+
+# Platform bootstrap super-admin (Worker secrets — never wrangler.jsonc vars).
+# Leave empty in the example; set real values only in gitignored .dev.vars.
+SUPER_ADMIN_EMAIL=
+SUPER_ADMIN_PASSWORD=
