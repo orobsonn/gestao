@@ -27,6 +27,10 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 - [shadcn-cn-not-utils](#shadcn-cn-not-utils) — shadcn cn helper at lib/cn.ts; components.json utils alias @/lib/cn; never lib/utils.ts
 - [status-transition-updated-at](#status-transition-updated-at) — tarefas.updated_at bumps only on real status change; feitas_7d is completion window not activity
 - [home-fetch-active-empresa](#home-fetch-active-empresa) — tenant SPA pages key fetch on me.active_empresa_id and cancel stale in-flight responses
+- [open-task-count-predicates](#open-task-count-predicates) — abertas/atrasadas shared home↔experts list: live deleted_at IS NULL; open status!=feito; late prazo past; never filter campanhas.status
+- [shell-domain-breadcrumb](#shell-domain-breadcrumb) — hierarchical Experts→… trail owned by AppShell; pages only inject names via useDomainBreadcrumbNames (clear-on-unmount)
+- [route-bound-parent-ids](#route-bound-parent-ids) — create under expert/campanha binds parent id from the route; nested campanha.expert mismatch → canonical redirect
+- [campanha-task-filters-delete](#campanha-task-filters-delete) — campaign task list filters are status+dono only; task delete is direct (no confirm modal)
 
 ---
 
@@ -195,3 +199,35 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 **Why:** After sidebar empresa switch, a mounted Home (or any tenant page) that fetched once on mount keeps the previous tenant's KPIs/lists; a late in-flight response can also overwrite the new tenant.
 
 **How to apply:** Key the load `useEffect` on `me.active_empresa_id`. Clear local data on change. Use a cancelled/generation flag so only the latest fetch may `setState`.
+
+---
+
+## open-task-count-predicates
+
+**Why:** Experts list badges and Home “atrasadas por expert” must agree. Filtering by `campanhas.status` (or treating “live” as campanha-open) splits the work contract across screens.
+
+**How to apply:** Open task = `t.deleted_at IS NULL AND t.status != 'feito'`. Late = open + `prazo IS NOT NULL AND prazo < date('now')`. Join parents only for expert_id scope — **never** `campanhas.status`. Same predicates in `listExperts` counts and `home.ts` (`countOpenMetric` / `buildAtrasadasPorExpert`). Locked in `tests/domain-experts.test.mjs`.
+
+---
+
+## shell-domain-breadcrumb
+
+**Why:** Nested domain routes (`/experts/:id/campanhas/:id`) used to fall through to a single “Gestão” title. Page-local trails diverge from the shell chrome e2e asserts against.
+
+**How to apply:** `AppShell` owns `nav[aria-label=breadcrumb]` via `resolveDomainBreadcrumbSegments` + page names. Pages call `useDomainBreadcrumbNames({ expert, campanha, tarefa })` after load; the hook clears on unmount so labels never stick on `/experts`. Do not duplicate hierarchical trails inside pages.
+
+---
+
+## route-bound-parent-ids
+
+**Why:** A free expert picker on “create campanha” or a deep link with mismatched `expertId`/`campanha.expert_id` shows the wrong tree and wrong back navigation.
+
+**How to apply:** Create campanha/tarefa bodies take parent id from the route only (`buildCreateCampanhaBody(routeExpertId, …)`). After GET campanha, `resolveCampanhaRouteIntegrity` → redirect to `/experts/{campanha.expert_id}/campanhas/{id}` on mismatch. Tarefa back path = GET tarefa → GET campanha → campaign list.
+
+---
+
+## campanha-task-filters-delete
+
+**Why:** PRD locks campaign list filters to status + dono (no campaign filter inside a campaign). Task delete is intentionally direct (no confirm) for web and bot parity.
+
+**How to apply:** UI filter controls = exactly `CAMPANHA_TASK_FILTER_CONTROL_IDS` (`status`, `dono`); client `filterTarefas`. `TAREFA_DELETE_REQUIRES_CONFIRMATION = false`; Excluir calls DELETE immediately then navigates to the campaign list.

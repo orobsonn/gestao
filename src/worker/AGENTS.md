@@ -31,4 +31,5 @@ Cloudflare Worker API (Hono) for auth, bootstrap, and platform provision.
 - **PATCH:** Zod `.strict()` allowlist only; unknown keys → 400; `null` clears optional nullable fields (dates, dono_id); re-read after UPDATE.
 - **tarefas updated_at:** bump `updated_at = datetime('now')` only when `status` is present **and** differs from the live row (completion window for `feitas_7d`, not activity).
 - **Home route:** `GET /api/empresa/home` via `registerHomeRoutes` inside `createEmpresaApp`; any active member; membro fail-closed (empresa KPIs zero, `empresa_abertas=[]`, charts scoped to `dono=viewer`).
+- **Expert list counts:** `GET /api/empresa/experts` enriches each row with `abertas`/`atrasadas` using the same open-task predicates as home (`deleted_at IS NULL`, `status != 'feito'`, late = `prazo < date('now')`); never filter `campanhas.status`.
 - **IDs:** server `crypto.randomUUID()`; never trust client id on create. `created_by` on tarefas is session user id only.
