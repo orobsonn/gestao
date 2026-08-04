@@ -21,6 +21,7 @@ const MIGRATIONS_DIR = resolve(__dirname, "../migrations");
 
 const SESSION_COOKIE_NAME = "gestao_session";
 const EXPERTS_PATH = "/api/empresa/experts";
+const HOME_PATH = "/api/empresa/home";
 
 /**
  * @description Open in-memory SQLite, enable FKs, apply every migrations/*.sql sorted by filename.
@@ -111,17 +112,117 @@ function seedExpert(db, opts) {
 /**
  * @description Seed a live campanha under expert (composite FK expert_id+empresa_id).
  * @param {DatabaseSync} db
- * @param {{ empresaId: string, expertId: string, id?: string, nome?: string, tipo?: string }} opts
+ * @param {{
+ *   empresaId: string,
+ *   expertId: string,
+ *   id?: string,
+ *   nome?: string,
+ *   tipo?: string,
+ *   status?: string,
+ * }} opts
  */
 function seedCampanha(db, opts) {
   const id = opts.id ?? crypto.randomUUID();
   const nome = opts.nome ?? "Campanha Seed";
   const tipo = opts.tipo ?? "gratuito";
+  const status = opts.status ?? "aberta";
   db.prepare(
-    `INSERT INTO campanhas (id, empresa_id, expert_id, nome, tipo)
-     VALUES (?, ?, ?, ?, ?)`,
-  ).run(id, opts.empresaId, opts.expertId, nome, tipo);
-  return { id, nome, empresaId: opts.empresaId, expertId: opts.expertId };
+    `INSERT INTO campanhas (id, empresa_id, expert_id, nome, tipo, status)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(id, opts.empresaId, opts.expertId, nome, tipo, status);
+  return {
+    id,
+    nome,
+    tipo,
+    status,
+    empresaId: opts.empresaId,
+    expertId: opts.expertId,
+  };
+}
+
+/**
+ * @description Seed a tarefa under campanha (created_by FK to users required).
+ * @param {DatabaseSync} db
+ * @param {{
+ *   empresaId: string,
+ *   campanhaId: string,
+ *   createdBy: string,
+ *   id?: string,
+ *   titulo?: string,
+ *   notas?: string,
+ *   status?: string,
+ *   prazo?: string | null,
+ *   donoId?: string | null,
+ *   deletedAt?: string | null,
+ * }} opts
+ */
+function seedTarefa(db, opts) {
+  const id = opts.id ?? crypto.randomUUID();
+  const titulo = opts.titulo ?? "Tarefa Seed";
+  const notas = opts.notas ?? "";
+  const status = opts.status ?? "a_fazer";
+  const prazo = opts.prazo ?? null;
+  const donoId = opts.donoId ?? null;
+  const deletedAt = opts.deletedAt ?? null;
+
+  if (deletedAt === null) {
+    db.prepare(
+      `INSERT INTO tarefas
+         (id, empresa_id, campanha_id, titulo, notas, status, prazo, dono_id, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      opts.empresaId,
+      opts.campanhaId,
+      titulo,
+      notas,
+      status,
+      prazo,
+      donoId,
+      opts.createdBy,
+    );
+  } else {
+    db.prepare(
+      `INSERT INTO tarefas
+         (id, empresa_id, campanha_id, titulo, notas, status, prazo, dono_id, created_by, deleted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      opts.empresaId,
+      opts.campanhaId,
+      titulo,
+      notas,
+      status,
+      prazo,
+      donoId,
+      opts.createdBy,
+      deletedAt,
+    );
+  }
+  return {
+    id,
+    titulo,
+    notas,
+    status,
+    prazo,
+    donoId,
+    empresaId: opts.empresaId,
+    campanhaId: opts.campanhaId,
+    createdBy: opts.createdBy,
+    deletedAt,
+  };
+}
+
+/**
+ * @description Evaluate a SQLite date/datetime expression against the open db.
+ * @param {DatabaseSync} db
+ * @param {string} expr
+ * @returns {string}
+ */
+function sqlDate(db, expr) {
+  const row = db.prepare(`SELECT ${expr} AS d`).get();
+  assert.ok(row && typeof row.d === "string", `sqlDate(${expr})`);
+  return row.d;
 }
 
 /**
@@ -219,28 +320,54 @@ function expertRow(db, id) {
 }
 
 /**
+ * @description Collect expert entries from list response body (array or {experts:[]}).
+ * @param {unknown} body
+ * @returns {unknown[]}
+ */
+function expertsFromList(body) {
+  assert.ok(body !== null && body !== undefined, "list body present");
+  if (Array.isArray(body)) {
+    return body;
+  }
+  if (body && typeof body === "object" && Array.isArray(body.experts)) {
+    return body.experts;
+  }
+  assert.fail("list body must be array or {experts:[]}");
+}
+
+/**
  * @description Collect expert ids from list response body (array or {experts:[]}).
  * @param {unknown} body
  * @returns {Set<string>}
  */
 function expertIdsFromList(body) {
-  assert.ok(body !== null && body !== undefined, "list body present");
-  /** @type {unknown[]} */
-  let items;
-  if (Array.isArray(body)) {
-    items = body;
-  } else if (body && typeof body === "object" && Array.isArray(body.experts)) {
-    items = body.experts;
-  } else {
-    assert.fail("list body must be array or {experts:[]}");
-  }
   /** @type {Set<string>} */
   const ids = new Set();
-  for (const item of items) {
+  for (const item of expertsFromList(body)) {
     assert.ok(item && typeof item === "object", "expert entry is object");
     if (typeof item.id === "string") ids.add(item.id);
   }
   return ids;
+}
+
+/**
+ * @description Find expert row by id in list body; fail if missing.
+ * @param {unknown} body
+ * @param {string} expertId
+ */
+function expertFromList(body, expertId) {
+  for (const item of expertsFromList(body)) {
+    assert.ok(item && typeof item === "object", "expert entry is object");
+    if (
+      item &&
+      typeof item === "object" &&
+      "id" in item &&
+      item.id === expertId
+    ) {
+      return item;
+    }
+  }
+  assert.fail(`expert ${expertId} missing from list`);
 }
 
 /**
@@ -664,6 +791,465 @@ test("lt-expert-patch-unknown-key-400: PATCH {nome:'Ok', extra:1} → 400; nome 
   const row = expertRow(db, expert.id);
   assert.ok(row);
   assert.equal(row.nome, "Keep Nome", "nome unchanged in DB");
+
+  db.close();
+});
+
+// ─── lt-expert-counts-abertas-atrasadas ────────────────────────────────────
+
+/**
+ * @description Expert open/late counts: open-future + open-late + feito → abertas=2, atrasadas=1.
+ */
+test("lt-expert-counts-abertas-atrasadas: open-future + open-late + feito → E.abertas===2 and E.atrasadas===1", async () => {
+  const db = openDb();
+  const membro = await seedUser(db, {
+    email: "membro-ex-counts@example.com",
+    name: "Membro Expert Counts",
+  });
+  const empA = seedEmpresa(db, { id: "emp-ex-counts-a", nome: "Empresa A" });
+  seedMembership(db, {
+    empresaId: empA.id,
+    userId: membro.id,
+    papel: "membro",
+  });
+  const expert = seedExpert(db, {
+    empresaId: empA.id,
+    id: "ex-counts-e",
+    nome: "Expert Counts",
+  });
+  const campanha = seedCampanha(db, {
+    empresaId: empA.id,
+    expertId: expert.id,
+    id: "camp-ex-counts",
+    nome: "Campanha Counts",
+  });
+
+  const yesterday = sqlDate(db, `date('now', '-1 day')`);
+  const future = sqlDate(db, `date('now', '+14 days')`);
+
+  seedTarefa(db, {
+    empresaId: empA.id,
+    campanhaId: campanha.id,
+    createdBy: membro.id,
+    id: "tar-ex-counts-future",
+    titulo: "Open Future",
+    status: "a_fazer",
+    prazo: future,
+  });
+  seedTarefa(db, {
+    empresaId: empA.id,
+    campanhaId: campanha.id,
+    createdBy: membro.id,
+    id: "tar-ex-counts-late",
+    titulo: "Open Late",
+    status: "fazendo",
+    prazo: yesterday,
+  });
+  seedTarefa(db, {
+    empresaId: empA.id,
+    campanhaId: campanha.id,
+    createdBy: membro.id,
+    id: "tar-ex-counts-feito",
+    titulo: "Done",
+    status: "feito",
+    prazo: yesterday,
+  });
+
+  const app = createEmpresaApp(db);
+  const { cookie } = await sessionFor(db, membro.id, empA.id);
+
+  const res = await getJson(app, EXPERTS_PATH, { Cookie: cookie });
+  assert.equal(res.status, 200, "GET experts returns 200");
+  const body = await res.json();
+  const row = expertFromList(body, expert.id);
+
+  assert.equal(row.abertas, 2, "abertas excludes feito; late is subset of open");
+  assert.equal(row.atrasadas, 1, "only open-late increments atrasadas");
+
+  db.close();
+});
+
+// ─── lt-expert-counts-ignore-campanha-status ───────────────────────────────
+
+/**
+ * @description Open task under campanha.status=encerrada still increments abertas/atrasadas.
+ */
+test("lt-expert-counts-ignore-campanha-status: open task under campanha.status=encerrada still increments abertas (and atrasadas if late)", async () => {
+  const db = openDb();
+  const membro = await seedUser(db, {
+    email: "membro-ex-enc@example.com",
+    name: "Membro Expert Encerrada",
+  });
+  const empA = seedEmpresa(db, { id: "emp-ex-enc-a", nome: "Empresa A" });
+  seedMembership(db, {
+    empresaId: empA.id,
+    userId: membro.id,
+    papel: "membro",
+  });
+  const expert = seedExpert(db, {
+    empresaId: empA.id,
+    id: "ex-enc-e",
+    nome: "Expert Encerrada",
+  });
+  const campanha = seedCampanha(db, {
+    empresaId: empA.id,
+    expertId: expert.id,
+    id: "camp-ex-enc",
+    nome: "Campanha Encerrada",
+    status: "encerrada",
+  });
+
+  const yesterday = sqlDate(db, `date('now', '-1 day')`);
+
+  seedTarefa(db, {
+    empresaId: empA.id,
+    campanhaId: campanha.id,
+    createdBy: membro.id,
+    id: "tar-ex-enc-late",
+    titulo: "Open Late Under Encerrada",
+    status: "a_fazer",
+    prazo: yesterday,
+  });
+
+  const app = createEmpresaApp(db);
+  const { cookie } = await sessionFor(db, membro.id, empA.id);
+
+  const res = await getJson(app, EXPERTS_PATH, { Cookie: cookie });
+  assert.equal(res.status, 200, "GET experts returns 200");
+  const body = await res.json();
+  const row = expertFromList(body, expert.id);
+
+  assert.equal(
+    row.abertas,
+    1,
+    "open task under encerrada campanha still increments abertas",
+  );
+  assert.equal(
+    row.atrasadas,
+    1,
+    "late open task under encerrada campanha still increments atrasadas",
+  );
+
+  db.close();
+});
+
+// ─── lt-expert-counts-exclude-deleted-tarefa ───────────────────────────────
+
+/**
+ * @description Soft-deleted open tarefa does not increment abertas or atrasadas.
+ */
+test("lt-expert-counts-exclude-deleted-tarefa: only soft-deleted open tarefa → E.abertas===0 and E.atrasadas===0", async () => {
+  const db = openDb();
+  const membro = await seedUser(db, {
+    email: "membro-ex-del-tar@example.com",
+    name: "Membro Expert Del Tar",
+  });
+  const empA = seedEmpresa(db, { id: "emp-ex-del-tar-a", nome: "Empresa A" });
+  seedMembership(db, {
+    empresaId: empA.id,
+    userId: membro.id,
+    papel: "membro",
+  });
+  const expert = seedExpert(db, {
+    empresaId: empA.id,
+    id: "ex-del-tar-e",
+    nome: "Expert Del Tar",
+  });
+  const campanha = seedCampanha(db, {
+    empresaId: empA.id,
+    expertId: expert.id,
+    id: "camp-ex-del-tar",
+    nome: "Campanha Del Tar",
+  });
+
+  const yesterday = sqlDate(db, `date('now', '-1 day')`);
+
+  seedTarefa(db, {
+    empresaId: empA.id,
+    campanhaId: campanha.id,
+    createdBy: membro.id,
+    id: "tar-ex-del-only",
+    titulo: "Soft-deleted Open Late",
+    status: "a_fazer",
+    prazo: yesterday,
+    deletedAt: "2026-01-01 00:00:00",
+  });
+
+  const app = createEmpresaApp(db);
+  const { cookie } = await sessionFor(db, membro.id, empA.id);
+
+  const res = await getJson(app, EXPERTS_PATH, { Cookie: cookie });
+  assert.equal(res.status, 200, "GET experts returns 200");
+  const body = await res.json();
+  const row = expertFromList(body, expert.id);
+
+  assert.equal(row.abertas, 0, "soft-deleted tarefa excluded from abertas");
+  assert.equal(row.atrasadas, 0, "soft-deleted tarefa excluded from atrasadas");
+
+  db.close();
+});
+
+// ─── lt-expert-counts-home-atrasadas-parity ────────────────────────────────
+
+/**
+ * @description Experts list atrasadas matches home charts.atrasadas_por_expert per expert_id (missing=0).
+ */
+test("lt-expert-counts-home-atrasadas-parity: experts atrasadas equals home charts.atrasadas_por_expert count per expert_id (missing=0)", async () => {
+  const db = openDb();
+  const admin = await seedUser(db, {
+    email: "admin-ex-parity@example.com",
+    name: "Admin Expert Parity",
+  });
+  const empA = seedEmpresa(db, { id: "emp-ex-parity-a", nome: "Empresa A" });
+  seedMembership(db, {
+    empresaId: empA.id,
+    userId: admin.id,
+    papel: "admin",
+  });
+
+  const expertLate = seedExpert(db, {
+    empresaId: empA.id,
+    id: "ex-parity-late",
+    nome: "Expert With Late",
+  });
+  const expertClean = seedExpert(db, {
+    empresaId: empA.id,
+    id: "ex-parity-clean",
+    nome: "Expert Clean",
+  });
+  const expertMulti = seedExpert(db, {
+    empresaId: empA.id,
+    id: "ex-parity-multi",
+    nome: "Expert Multi Late",
+  });
+
+  const campLate = seedCampanha(db, {
+    empresaId: empA.id,
+    expertId: expertLate.id,
+    id: "camp-ex-parity-late",
+    nome: "Camp Late",
+  });
+  const campClean = seedCampanha(db, {
+    empresaId: empA.id,
+    expertId: expertClean.id,
+    id: "camp-ex-parity-clean",
+    nome: "Camp Clean",
+  });
+  const campMulti = seedCampanha(db, {
+    empresaId: empA.id,
+    expertId: expertMulti.id,
+    id: "camp-ex-parity-multi",
+    nome: "Camp Multi",
+  });
+
+  const yesterday = sqlDate(db, `date('now', '-1 day')`);
+  const future = sqlDate(db, `date('now', '+7 days')`);
+
+  // expertLate: 1 late open
+  seedTarefa(db, {
+    empresaId: empA.id,
+    campanhaId: campLate.id,
+    createdBy: admin.id,
+    id: "tar-ex-parity-late-1",
+    titulo: "Late 1",
+    status: "a_fazer",
+    prazo: yesterday,
+  });
+  // expertClean: open future only (no late) — home chart omits; experts atrasadas=0
+  seedTarefa(db, {
+    empresaId: empA.id,
+    campanhaId: campClean.id,
+    createdBy: admin.id,
+    id: "tar-ex-parity-clean-1",
+    titulo: "Future Only",
+    status: "a_fazer",
+    prazo: future,
+  });
+  // expertMulti: 2 late open + 1 feito late (feito excluded)
+  seedTarefa(db, {
+    empresaId: empA.id,
+    campanhaId: campMulti.id,
+    createdBy: admin.id,
+    id: "tar-ex-parity-multi-1",
+    titulo: "Multi Late 1",
+    status: "a_fazer",
+    prazo: yesterday,
+  });
+  seedTarefa(db, {
+    empresaId: empA.id,
+    campanhaId: campMulti.id,
+    createdBy: admin.id,
+    id: "tar-ex-parity-multi-2",
+    titulo: "Multi Late 2",
+    status: "fazendo",
+    prazo: yesterday,
+  });
+  seedTarefa(db, {
+    empresaId: empA.id,
+    campanhaId: campMulti.id,
+    createdBy: admin.id,
+    id: "tar-ex-parity-multi-feito",
+    titulo: "Multi Feito Late",
+    status: "feito",
+    prazo: yesterday,
+  });
+
+  const app = createEmpresaApp(db);
+  const { cookie } = await sessionFor(db, admin.id, empA.id);
+
+  const expertsRes = await getJson(app, EXPERTS_PATH, { Cookie: cookie });
+  assert.equal(expertsRes.status, 200, "GET experts returns 200");
+  const expertsBody = await expertsRes.json();
+
+  const homeRes = await getJson(app, HOME_PATH, { Cookie: cookie });
+  assert.equal(homeRes.status, 200, "GET home returns 200");
+  const homeBody = await homeRes.json();
+  assert.ok(homeBody && typeof homeBody === "object");
+  assert.ok(homeBody.charts && typeof homeBody.charts === "object");
+  assert.ok(
+    Array.isArray(homeBody.charts.atrasadas_por_expert),
+    "home charts.atrasadas_por_expert is array",
+  );
+
+  /** @type {Map<string, number>} */
+  const homeByExpert = new Map();
+  for (const entry of homeBody.charts.atrasadas_por_expert) {
+    assert.ok(entry && typeof entry === "object");
+    assert.equal(typeof entry.expert_id, "string");
+    assert.equal(typeof entry.count, "number");
+    homeByExpert.set(entry.expert_id, entry.count);
+  }
+
+  const experts = expertsFromList(expertsBody);
+  assert.ok(experts.length >= 3, "list includes seeded experts");
+
+  for (const item of experts) {
+    assert.ok(item && typeof item === "object");
+    assert.equal(typeof item.id, "string");
+    assert.equal(typeof item.atrasadas, "number");
+    const homeCount = homeByExpert.get(item.id) ?? 0;
+    assert.equal(
+      item.atrasadas,
+      homeCount,
+      `expert ${item.id} atrasadas matches home atrasadas_por_expert (missing=0)`,
+    );
+  }
+
+  // Explicit expected anchors for the seed
+  assert.equal(
+    expertFromList(expertsBody, expertLate.id).atrasadas,
+    1,
+    "expertLate atrasadas===1",
+  );
+  assert.equal(
+    expertFromList(expertsBody, expertClean.id).atrasadas,
+    0,
+    "expertClean atrasadas===0",
+  );
+  assert.equal(
+    expertFromList(expertsBody, expertMulti.id).atrasadas,
+    2,
+    "expertMulti atrasadas===2",
+  );
+
+  db.close();
+});
+
+// ─── lt-expert-counts-tenant-isolation ─────────────────────────────────────
+
+/**
+ * @description Tasks only on empresa B never appear on A experts list or inflate A's counts.
+ */
+test("lt-expert-counts-tenant-isolation: tasks only on B + session A → no B expert; A experts abertas/atrasadas===0 for B work", async () => {
+  const db = openDb();
+  const admin = await seedUser(db, {
+    email: "admin-ex-iso@example.com",
+    name: "Admin Expert Iso",
+  });
+  const empA = seedEmpresa(db, { id: "emp-ex-iso-a", nome: "Empresa A" });
+  const empB = seedEmpresa(db, { id: "emp-ex-iso-b", nome: "Empresa B" });
+  seedMembership(db, {
+    empresaId: empA.id,
+    userId: admin.id,
+    papel: "admin",
+  });
+  seedMembership(db, {
+    empresaId: empB.id,
+    userId: admin.id,
+    papel: "admin",
+  });
+
+  const expertA = seedExpert(db, {
+    empresaId: empA.id,
+    id: "ex-iso-a",
+    nome: "Expert A",
+  });
+  const expertB = seedExpert(db, {
+    empresaId: empB.id,
+    id: "ex-iso-b",
+    nome: "Expert B",
+  });
+
+  // Campanha on A with no tasks — baseline zero counts
+  seedCampanha(db, {
+    empresaId: empA.id,
+    expertId: expertA.id,
+    id: "camp-ex-iso-a",
+    nome: "Campanha A Empty",
+  });
+
+  const campB = seedCampanha(db, {
+    empresaId: empB.id,
+    expertId: expertB.id,
+    id: "camp-ex-iso-b",
+    nome: "Campanha B Work",
+  });
+
+  const yesterday = sqlDate(db, `date('now', '-1 day')`);
+  const future = sqlDate(db, `date('now', '+3 days')`);
+
+  seedTarefa(db, {
+    empresaId: empB.id,
+    campanhaId: campB.id,
+    createdBy: admin.id,
+    id: "tar-ex-iso-b-late",
+    titulo: "B Late",
+    status: "a_fazer",
+    prazo: yesterday,
+  });
+  seedTarefa(db, {
+    empresaId: empB.id,
+    campanhaId: campB.id,
+    createdBy: admin.id,
+    id: "tar-ex-iso-b-open",
+    titulo: "B Open",
+    status: "fazendo",
+    prazo: future,
+  });
+
+  const app = createEmpresaApp(db);
+  const { cookie } = await sessionFor(db, admin.id, empA.id);
+
+  const res = await getJson(app, EXPERTS_PATH, { Cookie: cookie });
+  assert.equal(res.status, 200, "GET experts returns 200");
+  const body = await res.json();
+  const ids = expertIdsFromList(body);
+
+  assert.equal(ids.has(expertB.id), false, "no expert row from B appears");
+  assert.ok(ids.has(expertA.id), "A expert is listed");
+
+  const rowA = expertFromList(body, expertA.id);
+  assert.equal(rowA.abertas, 0, "A expert abertas===0 for B work");
+  assert.equal(rowA.atrasadas, 0, "A expert atrasadas===0 for B work");
+
+  for (const item of expertsFromList(body)) {
+    assert.ok(item && typeof item === "object");
+    assert.notEqual(
+      item.id,
+      expertB.id,
+      "list must not include B expert id",
+    );
+  }
 
   db.close();
 });

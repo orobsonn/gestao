@@ -11,12 +11,14 @@ import {
   resolveShellBranch,
 } from "./lib/shell-routes";
 import { AdminPlaceholder } from "./pages/AdminPlaceholder";
-import { ExpertsPlaceholder } from "./pages/ExpertsPlaceholder";
+import { CampanhaTarefasPage } from "./pages/CampanhaTarefasPage";
+import { ExpertCampanhasPage } from "./pages/ExpertCampanhasPage";
+import { ExpertsPage } from "./pages/ExpertsPage";
 import { HomePage } from "./pages/HomePage";
 import { LoginPage } from "./pages/LoginPage";
 import { MeuTrabalhoPlaceholder } from "./pages/MeuTrabalhoPlaceholder";
 import { PlatformPage } from "./pages/PlatformPage";
-import { TarefaDetailStub } from "./pages/TarefaDetailStub";
+import { TarefaDetailPage } from "./pages/TarefaDetailPage";
 import { useAuth } from "./providers/auth-provider";
 
 /**
@@ -54,9 +56,14 @@ export function App() {
         }
       >
         <Route path="/" element={<HomePage />} />
-        <Route path="/experts" element={<ExpertsPlaceholder />} />
+        <Route path="/experts" element={<ExpertsPage />} />
+        <Route path="/experts/:expertId" element={<ExpertCampanhasPage />} />
+        <Route
+          path="/experts/:expertId/campanhas/:campanhaId"
+          element={<CampanhaTarefasPage />}
+        />
         <Route path="/meu-trabalho" element={<MeuTrabalhoPlaceholder />} />
-        <Route path="/tarefas/:id" element={<TarefaDetailStub />} />
+        <Route path="/tarefas/:id" element={<TarefaDetailPage />} />
         <Route
           path="/admin"
           element={
