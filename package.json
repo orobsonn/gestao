@@ -11,8 +11,10 @@
     "db:migrate:local": "wrangler d1 migrations apply gestao-db --local",
     "db:migrate": "wrangler d1 migrations apply gestao-db --remote",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "node --experimental-strip-types --test"
   },
+
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
     "hono": "^4.10.7",

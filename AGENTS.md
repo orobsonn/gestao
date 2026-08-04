@@ -214,3 +214,9 @@ this section and that test together, only after confirming a reorder is intentio
 numeric prefix or a single loader once tracks touching these files land, or a 6th plugin
 joins the chain — whichever comes first.
 <!-- harness:end -->
+
+## Project folder router (outside harness block)
+
+| Folder | What lives there | See |
+|--------|------------------|-----|
+| migrations/ | D1 SQL multi-tenant schema + composite FK law | migrations/AGENTS.md |
