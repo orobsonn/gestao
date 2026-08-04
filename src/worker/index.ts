@@ -1,9 +1,10 @@
-/** @description Cloudflare Worker entry — FK pragma, bootstrap SA, auth/platform routes, ASSETS. */
+/** @description Cloudflare Worker entry — FK pragma, bootstrap SA, auth/platform/empresa routes, ASSETS. */
 
 import { Hono } from 'hono'
 import { ensureBootstrapSuperAdmin } from './auth/bootstrap.ts'
 import { enableForeignKeysAsync } from './db.ts'
 import { createAuthApp } from './routes/auth.ts'
+import { createEmpresaApp } from './routes/empresa.ts'
 import { createPlatformApp } from './routes/platform.ts'
 import type { BatchDbLike, BatchStatement } from './services/create-empresa.ts'
 import type { DbLike, StatementLike } from './types.ts'
@@ -19,7 +20,7 @@ export type WorkerEnv = {
 }
 
 /**
- * @description D1 adapter: DbLike (get/run) + bind/batch for atomic multi-statement writes.
+ * @description D1 adapter: DbLike (get/run/all) + bind/batch for atomic multi-statement writes.
  */
 function d1AsDbLike(d1: D1Database): DbLike & BatchDbLike {
   return {
@@ -40,6 +41,14 @@ function d1AsDbLike(d1: D1Database): DbLike & BatchDbLike {
               : await stmt.bind(...params).first()
           // D1 first() yields null; DbLike uses undefined for missing rows.
           return row ?? undefined
+        },
+        async all(...params: unknown[]) {
+          const stmt = d1.prepare(sql)
+          const result =
+            params.length === 0
+              ? await stmt.all()
+              : await stmt.bind(...params).all()
+          return (result?.results ?? []) as Record<string, unknown>[]
         },
         bind(...params: unknown[]) {
           const bound = d1.prepare(sql).bind(...params)
@@ -86,6 +95,14 @@ app.all('/api/auth/*', (c) => {
 app.all('/api/platform/*', (c) => {
   const db = d1AsDbLike(c.env.DB)
   return createPlatformApp(db).fetch(c.req.raw)
+})
+
+/**
+ * @description Dispatch /api/empresa/* to createEmpresaApp closed over this request's DB.
+ */
+app.all('/api/empresa/*', (c) => {
+  const db = d1AsDbLike(c.env.DB)
+  return createEmpresaApp(db).fetch(c.req.raw)
 })
 
 /**

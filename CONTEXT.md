@@ -15,3 +15,5 @@ Implementation-free: what the term MEANS in the business, never which file imple
 | dono | Usuário opcional responsável por uma tarefa (`dono_id`); distinto de quem criou |
 | created_by | Usuário que criou a tarefa; obrigatório e imutável no sentido de autoria |
 | platform | Superfície de operação do super_admin da plataforma (provisionar empresas); distinta do app multi-tenant da empresa |
+| empresa ativa | Empresa cujo contexto a sessão usa para escopar APIs de tenant; null quando o usuário tem zero ou várias memberships até escolher (ou auto se só tem uma) |
+| membership | Vínculo do usuário a uma empresa com papel admin\|membro; só empresas não soft-deleted entram na lista e podem ser ativadas |
