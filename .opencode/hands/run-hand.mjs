@@ -1,5 +1,5 @@
 /**
- * @description OpenCode cheap-hand adapter: spawn mode-primary agents via `opencode run`,
+ * @description OpenCode cheap-hand adapter: spawn mode-all agents via `opencode run`,
  * independent capture (shared capture-oracle), worktree policy by outcome, session-scoped
  * run-records. DONE never from prose or process exit code. Plugins never read hand auth tokens.
  */
@@ -24,17 +24,17 @@ import {
   subtractUnchanged,
 } from "../shared/lib/capture-oracle.mjs";
 import { gateStatePath } from "../shared/lib/path-helpers.mjs";
-import { mergeGateState } from "../plugin/lib/gate-state.mjs";
-import { hasFidelityPass } from "../plugin/lib/entry-decide.mjs";
-import { claimActiveDispatch, finishActiveDispatch, reconcileCleanupPending } from "../plugin/lib/dispatch-scope.mjs";
-import { writeHandRecord } from "../plugin/lib/hand-records.mjs";
+import { mergeGateState } from "../lib/gate-state.mjs";
+import { hasFidelityPass } from "../lib/entry-decide.mjs";
+import { claimDispatchForRuntime, removeDispatchRecord } from "../lib/dispatch-scope.mjs";
+import { writeHandRecord } from "../lib/hand-records.mjs";
 
 export { writeHandRecord };
 
 /** Forced non-zero locked-test exit for vacuous-green guard. */
 export const VACUOUS_GREEN_EXIT = 1;
 
-/** Hand roles that may be CLI-spawned (must use *-spawn twin). */
+/** Hand roles that may be CLI-spawned. */
 export const SPAWNABLE_HAND_ROLES = Object.freeze([
   "executor-low",
   "executor-medium",
@@ -46,13 +46,12 @@ export const SPAWNABLE_HAND_ROLES = Object.freeze([
 ]);
 
 /**
- * @description Map role name to CLI spawn agent id (P2: mode primary).
+ * @description Map a hand role to its shared in-session/CLI agent id.
  * @param {string} role
  * @returns {string}
  */
 export function spawnAgentName(role) {
-  const base = String(role ?? "").replace(/-spawn$/, "");
-  return `${base}-spawn`;
+  return String(role ?? "");
 }
 
 /**
@@ -66,11 +65,11 @@ export function extractFrontmatter(md) {
 }
 
 /**
- * @description Validate spawn agent file: mode primary + tools.task false. Refuse subagent.
+ * @description Validate a CLI hand agent: refuse subagent mode and nested task dispatch.
  * Never throws.
  * @param {string} agentMd
  * @param {string} [agentName]
- * @returns {{ ok: true, agentName: string } | { ok: false, reason: string, outcome: string }}
+ * @returns {{ ok: true, agentName: string, model: string } | { ok: false, reason: string, outcome: string }}
  */
 export function validateSpawnAgent(agentMd, agentName = "agent") {
   try {
@@ -87,14 +86,16 @@ export function validateSpawnAgent(agentMd, agentName = "agent") {
     if (mode === "subagent") {
       return {
         ok: false,
-        reason: `agent ${agentName}: mode subagent refused for CLI spawn (P2 — use *-spawn primary twin)`,
+        reason: `agent ${agentName}: mode subagent refused for CLI spawn`,
         outcome: OUTCOME.CONFIG_ERROR,
       };
     }
-    if (mode !== "primary") {
+    const modelM = fm.match(/^model:\s*(.+)$/m);
+    const model = modelM ? modelM[1].trim().replace(/^["']|["']$/g, "") : "";
+    if (!model) {
       return {
         ok: false,
-        reason: `agent ${agentName}: mode must be primary for opencode run (got ${mode || "missing"})`,
+        reason: `agent ${agentName}: model is required for CLI spawn`,
         outcome: OUTCOME.CONFIG_ERROR,
       };
     }
@@ -117,7 +118,7 @@ export function validateSpawnAgent(agentMd, agentName = "agent") {
         outcome: OUTCOME.CONFIG_ERROR,
       };
     }
-    return { ok: true, agentName };
+    return { ok: true, agentName, model };
   } catch (err) {
     return {
       ok: false,
@@ -129,16 +130,18 @@ export function validateSpawnAgent(agentMd, agentName = "agent") {
 
 /**
  * @description Build argv for `opencode run` (token never in argv).
- * @param {{ projectDir: string, agent: string, title: string, prompt: string }} p
+ * @param {{ projectDir: string, agent: string, model: string, title: string, prompt: string }} p
  * @returns {string[]}
  */
-export function buildOpencodeRunArgs({ projectDir, agent, title, prompt }) {
+export function buildOpencodeRunArgs({ projectDir, agent, model, title, prompt }) {
   return [
     "run",
     "--dir",
     projectDir,
     "--agent",
     agent,
+    "--model",
+    model,
     "--auto",
     "--format",
     "json",
@@ -683,12 +686,14 @@ export function buildHandRunRecord({
   timestamps = {},
   hand_quarantine = false,
   worktree = {},
+  producerCallId,
 }) {
   const now = timestamps.finishedAt ?? new Date().toISOString();
   return {
     featureId,
     taskId,
     sessionId,
+    ...(typeof producerCallId === "string" && producerCallId ? { producerCallId } : {}),
     freezeCommitSha,
     outcome,
     touchedPaths,
@@ -710,7 +715,7 @@ export function buildHandRunRecord({
 /**
  * @description Load and validate a spawn agent file from agents dir.
  * @param {string} agentsDir
- * @param {string} agentName e.g. executor-high-spawn
+ * @param {string} agentName e.g. executor-high
  * @param {{ readFileSync?: typeof readFileSync, existsSync?: typeof existsSync }} [fs]
  */
 export function loadAndValidateSpawnAgent(
@@ -718,19 +723,6 @@ export function loadAndValidateSpawnAgent(
   agentName,
   fs = { readFileSync, existsSync }
 ) {
-  // Refuse bare subagent names without -spawn suffix when they look like hands
-  const base = agentName.replace(/-spawn$/, "");
-  if (
-    SPAWNABLE_HAND_ROLES.includes(base) &&
-    !String(agentName).endsWith("-spawn")
-  ) {
-    return {
-      ok: false,
-      reason: `refuse subagent-mode agent file ${agentName}.md — use ${base}-spawn (mode primary)`,
-      outcome: OUTCOME.CONFIG_ERROR,
-    };
-  }
-
   const path = join(agentsDir, `${agentName}.md`);
   if (!fs.existsSync(path)) {
     return {
@@ -778,21 +770,23 @@ export async function runHand(descriptor, deps = {}) {
     markHandQuarantine = null,
     checkFidelityPass = null,
     now = () => new Date().toISOString(),
-    dispatchToken = () => randomUUID(),
     dispatchCallId = () => `run-hand:${randomUUID()}`,
-    finishDispatch = finishActiveDispatch,
+    finishDispatch = removeDispatchRecord,
+    dispatchEnvironment = process.env,
+    isReviewedShaAncestor = null,
   } = deps;
 
   const featureId = descriptor?.feature_id ?? descriptor?.featureId;
   const taskId = descriptor?.task_id ?? descriptor?.taskId;
   const sessionId = descriptor?.session_id ?? descriptor?.sessionId;
   const projectRoot = descriptor?.project_root ?? descriptor?.projectRoot ?? process.cwd();
-  const freezeCommitSha = descriptor?.freeze_commit_sha ?? descriptor?.freezeCommitSha;
+  let freezeCommitSha = descriptor?.freeze_commit_sha ?? descriptor?.freezeCommitSha;
   const role = descriptor?.role ?? descriptor?.agent ?? "executor-medium";
   const agent = spawnAgentName(role);
   const no_tests = descriptor?.no_tests === true;
   const brief = descriptor?.brief ?? descriptor?.prompt ?? "";
   const title = `hand:${featureId}:${taskId}`;
+  const resolvedAgentsDir = agentsDir ?? join(projectRoot, ".opencode", "agents");
 
   const checkQuarantine = () => {
     if (typeof isHandQuarantined === "function") {
@@ -887,6 +881,9 @@ export async function runHand(descriptor, deps = {}) {
   if (!freezeCommitSha) {
     return failConfig("freeze_commit_sha is required");
   }
+  if (!SPAWNABLE_HAND_ROLES.includes(role)) {
+    return failConfig(`role ${role}: not a CLI-spawnable hand`);
+  }
 
   // Deny spawn while gate-state hand_quarantine marker is set for this feature+task
   if (checkQuarantine()) {
@@ -908,42 +905,21 @@ export async function runHand(descriptor, deps = {}) {
     }
   }
 
-  // Validate spawn agent (mode primary, tools.task false; refuse subagent files)
-  if (agentsDir || readAgent) {
-    let validation;
-    if (readAgent) {
-      const md = readAgent(agent);
-      if (md == null) {
-        return failConfig(`agent ${agent} not found`);
-      }
-      validation = validateSpawnAgent(md, agent);
-    } else {
-      validation = loadAndValidateSpawnAgent(agentsDir, agent);
+  // The vendored frontmatter is authoritative for both lockdown and the CLI model override.
+  let validation;
+  if (readAgent) {
+    const md = readAgent(agent);
+    if (md == null) {
+      return failConfig(`agent ${agent} not found`);
     }
-    // Also refuse if caller passed a bare subagent name explicitly as agent file
-    if (descriptor?.agent_file && !String(descriptor.agent_file).includes("-spawn")) {
-      const bare = String(descriptor.agent_file).replace(/\.md$/, "");
-      if (SPAWNABLE_HAND_ROLES.includes(bare)) {
-        return failConfig(
-          `refuse subagent-mode agent file ${bare}.md — use ${bare}-spawn`
-        );
-      }
-    }
-    if (!validation.ok) {
-      return failConfig(validation.reason);
-    }
-  } else if (
-    descriptor?.agent_file &&
-    !String(descriptor.agent_file).endsWith("-spawn") &&
-    !String(descriptor.agent_file).endsWith("-spawn.md")
-  ) {
-    const bare = String(descriptor.agent_file).replace(/\.md$/, "");
-    if (SPAWNABLE_HAND_ROLES.includes(bare)) {
-      return failConfig(
-        `refuse subagent-mode agent file ${bare}.md — use ${bare}-spawn`
-      );
-    }
+    validation = validateSpawnAgent(md, agent);
+  } else {
+    validation = loadAndValidateSpawnAgent(resolvedAgentsDir, agent);
   }
+  if (!validation.ok) {
+    return failConfig(validation.reason);
+  }
+  const handModel = validation.model;
 
   // Pre-spawn snapshot: all-others (no --exclude-standard) so gitignored hand writes
   // (.env etc.) are in the set-diff and deleted on non-DONE cleanup.
@@ -958,26 +934,40 @@ export async function runHand(descriptor, deps = {}) {
   );
 
   const callId = dispatchCallId();
-  const claimToken = dispatchToken();
-  const reconciledCleanup = reconcileCleanupPending(projectRoot, sessionId);
-  if (!reconciledCleanup.ok) {
-    return failConfig(`cleanup_pending blocks dispatch: ${reconciledCleanup.reason}`, {
-      preUntracked: preSnap.paths,
-      preUntrackedContents: preSnap.contents,
-    });
-  }
-  const claimed = claimActiveDispatch(projectRoot, {
+  const claimed = claimDispatchForRuntime(projectRoot, {
     sessionId,
     callId,
     role,
     taskId,
-    token: claimToken,
+    featureId,
+  }, {
+    env: dispatchEnvironment,
+    isAncestorFn: isReviewedShaAncestor ?? ((sha) => {
+      try {
+        const status = spawnSync("git", ["merge-base", "--is-ancestor", sha, "HEAD"], {
+          cwd: projectRoot,
+          stdio: "ignore",
+        }).status;
+        return status === 0 ? true : status === 1 ? false : null;
+      } catch { return null; }
+    }),
   });
   if (!claimed.ok) {
-    return failConfig(`active_dispatch claim failed: ${claimed.reason}`, {
+    return failConfig(`dispatch record claim failed: ${claimed.reason}`, {
       preUntracked: preSnap.paths,
       preUntrackedContents: preSnap.contents,
     });
+  }
+  if (typeof claimed.reviewedSha === "string" && freezeCommitSha !== claimed.reviewedSha) {
+    const suppliedFreezeCommitSha = freezeCommitSha;
+    freezeCommitSha = claimed.reviewedSha;
+    const finished = finishDispatch(projectRoot, { sessionId, callId });
+    return failConfig(
+      finished.ok
+        ? `descriptor freeze sha conflicts with fix-mode authority: ${suppliedFreezeCommitSha}`
+        : `descriptor freeze sha conflicts with fix-mode authority and ${finished.reason}`,
+      { preUntracked: preSnap.paths, preUntrackedContents: preSnap.contents },
+    );
   }
   const dispatchScope = claimed.claim;
 
@@ -987,17 +977,17 @@ export async function runHand(descriptor, deps = {}) {
     child = await spawn({
       projectDir: projectRoot,
       agent,
+      model: handModel,
       title,
       prompt: brief,
       descriptor,
       dispatchAuthority: {
         sessionId,
         callId,
-        claimToken,
       },
     });
   } catch (err) {
-    const finished = finishDispatch(projectRoot, { sessionId, callId, token: claimToken });
+    const finished = finishDispatch(projectRoot, { sessionId, callId });
     if (!finished.ok) {
       return failConfig(`spawn failed and ${finished.reason}`, {
         preUntracked: preSnap.paths,
@@ -1009,14 +999,6 @@ export async function runHand(descriptor, deps = {}) {
       preUntrackedContents: preSnap.contents,
     });
   }
-  const finished = finishDispatch(projectRoot, { sessionId, callId, token: claimToken });
-  if (!finished.ok) {
-    return failConfig(finished.reason, {
-      preUntracked: preSnap.paths,
-      preUntrackedContents: preSnap.contents,
-    });
-  }
-
   // Capture
   const gitAdapter =
     git ??
@@ -1142,6 +1124,7 @@ export async function runHand(descriptor, deps = {}) {
     timestamps: { startedAt, finishedAt: now() },
     hand_quarantine: worktree.hand_quarantine === true,
     worktree,
+    producerCallId: callId,
   });
 
   const written = writeRecord({
@@ -1154,6 +1137,16 @@ export async function runHand(descriptor, deps = {}) {
     taskId,
     record,
   });
+
+  if (outcome !== OUTCOME.DONE || !written.ok) {
+    const finished = finishDispatch(projectRoot, { sessionId, callId });
+    if (!finished.ok) {
+      return failConfig(finished.reason, {
+        preUntracked: preSnap.paths,
+        preUntrackedContents: preSnap.contents,
+      });
+    }
+  }
 
   return {
     ok: outcome === OUTCOME.DONE,
@@ -1223,16 +1216,16 @@ export function realTestRunner(testPath, cwd = process.cwd()) {
 /**
  * @description Default spawn: opencode run (not exercised by unit tests).
  */
-function defaultSpawnOpencode({ projectDir, agent, title, prompt, dispatchAuthority }) {
-  const args = buildOpencodeRunArgs({ projectDir, agent, title, prompt });
+function defaultSpawnOpencode({ projectDir, agent, model, title, prompt, dispatchAuthority }) {
+  const args = buildOpencodeRunArgs({ projectDir, agent, model, title, prompt });
   const r = spawnSync("opencode", args, {
     cwd: projectDir,
     encoding: "utf8",
     maxBuffer: 20 * 1024 * 1024,
     env: {
       ...process.env,
-      HARNESS_ACTIVE_DISPATCH_SESSION_ID: dispatchAuthority?.sessionId ?? "",
-      HARNESS_ACTIVE_DISPATCH_CLAIM_TOKEN: dispatchAuthority?.claimToken ?? "",
+      HARNESS_DISPATCH_PARENT_SESSION_ID: dispatchAuthority?.sessionId ?? "",
+      HARNESS_DISPATCH_CALL_ID: dispatchAuthority?.callId ?? "",
     },
   });
   return {

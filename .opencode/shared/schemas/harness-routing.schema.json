@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Harness Routing Config",
   "type": "object",
-  "required": ["version", "roles", "constraints", "modelCapabilities"],
+  "required": ["version", "roles", "modelCapabilities"],
   "properties": {
     "version": { "type": "integer", "const": 2 },
     "roles": {
@@ -12,8 +12,18 @@
       "properties": {
         "build": { "$ref": "#/definitions/roleSimple" },
         "planner": { "$ref": "#/definitions/rolePlanner" },
-        "plan-reviewer": { "$ref": "#/definitions/roleFamilies" },
-        "adversary": { "$ref": "#/definitions/roleFamilies" },
+        "plan-reviewer": {
+          "oneOf": [
+            { "$ref": "#/definitions/roleReview" },
+            { "$ref": "#/definitions/roleFamilies" }
+          ]
+        },
+        "adversary": {
+          "oneOf": [
+            { "$ref": "#/definitions/roleReview" },
+            { "$ref": "#/definitions/roleFamilies" }
+          ]
+        },
         "compliance": { "$ref": "#/definitions/roleSimple" },
         "security": { "$ref": "#/definitions/roleSimple" },
         "executor": { "$ref": "#/definitions/roleTiers" },
@@ -25,7 +35,6 @@
     },
     "constraints": {
       "type": "object",
-      "required": ["crossFamilyRoles", "requireDualOn"],
       "additionalProperties": false,
       "properties": {
         "crossFamilyRoles": { "$ref": "#/definitions/reviewRoleList" },
@@ -52,14 +61,21 @@
         "reasoningEffort": {}
       }
     },
+    "roleReview": {
+      "type": "object",
+      "required": ["model"],
+      "properties": {
+        "model": { "type": "string", "pattern": "^[^/\\s]+/\\S+$" },
+        "secondEyeModel": { "type": "string", "pattern": "^[^/\\s]+/\\S+$" },
+        "reasoningEffort": {}
+      }
+    },
     "rolePlanner": {
       "allOf": [
         { "$ref": "#/definitions/roleSimple" },
         {
           "type": "object",
-          "properties": {
-            "fallback": { "$ref": "#/definitions/roleSimple" }
-          }
+          "not": { "required": ["fallback"] }
         }
       ]
     },

@@ -1,12 +1,23 @@
 /**
- * @description OC entry-gate plugin — ceremony + bash delivery/forge + ADR-003 dual.
+ * @description OC entry-gate plugin — plain persisted planner facts + bash delivery/forge.
  * On tool.execute.before:
- * - bash/shell: decideBashForge then decideBashDelivery (gate-state from disk)
- * - task: decideEntryTask then enforceDualFromDiskOrThrow for executor/sniper
- * Deny throws [entry-gate]. Fail-closed on unreadable gate-state for delivery.
- * Delivery bash injects gitState + isAncestorFn + listHandRecordsForFeatureFn;
- * non-delivery never probes git/list/ancestor.
- * Load shape matches loop-guard: dynamic import of pure mjs inside factory
+ * - bash/shell: decideBashAdvisory (allow + advisory, never denies) then decideBashDelivery
+ *   (gate-state from disk via lib/gate-state.mjs)
+ * - task: decideEntryTask for factual delivery, re-gate, fidelity, and planner rails.
+ * Deny throws [entry-gate]. Bash delivery is fail-OPEN on unreadable/missing gate-state and
+ * on a missing/unsafe sessionId (Claude Code parity) — decideBashDelivery's own rails
+ * (branch/zero-commits, regate, capture, real-file) still apply against the resulting {}.
+ * The sole deliberate fail-closed exception is a CORRUPT regate_pending (present but not a
+ * JSON array); hand_finished/capture_verified/regate_passed coerce to [] on a non-array value,
+ * mirroring Claude Code exactly. Marker-seal validation is not applied anywhere (bash or
+ * Task/Agent dispatch) — see docs/OC-CC-PARITY-REPORT.md item #32: the seal secret was
+ * per-process-instance, so a fresh OpenCode process could never verify a marker sealed
+ * before it started, bricking delivery for any session resumed after a restart (#423).
+ * Delivery bash always injects isAncestorFn + listHandRecordsForFeatureFn (cheap lazy
+ * closures; decideBashDelivery only invokes them for delivery commands, spawn-hand.mjs
+ * dispatches, and the freeze-commit early trigger); gitState (a real git probe) is injected
+ * only for delivery commands.
+ * Load shape uses dynamic imports of pure mjs inside the factory.
  * (static import of mjs breaks OC plugin loader — "export is not a function").
  */
 
@@ -25,14 +36,15 @@ export type EntryGateDeps = {
     defaultBranch?: string | null
   } | null
   isAncestorFn?: (sha: string) => boolean | null
+  /** Session environment carrying host-frozen fix-mode authority (injectable in tests). */
+  dispatchEnvironment?: Record<string, string | undefined>
   listHandRecordsForFeatureFn?: (featureId: string) => unknown[]
-  /** Read the bound execution-plan snapshot for the A5 capture rail (injectable). */
-  readBoundPlanFn?: (gateState: unknown) => unknown
-  ceremonyPersistFn?: (statePath: string, mutate: (state: Record<string, unknown>) => Record<string, unknown> | { ok: false; reason: string }) => { ok: boolean; reason?: string }
   /** Resolve parent session id for classify top-level rail (injectable in tests). */
   getSessionParentIdFn?: (sessionId: string) => Promise<string | null>
   /** Acting agent name when known (injectable). */
   resolveActingAgentFn?: (input: unknown, output: unknown) => string | null
+  /** Official SDK client used only to bind factual child Task metadata. */
+  client?: any
 }
 
 /**
@@ -51,7 +63,7 @@ function isBashOrShellTool(toolName: unknown): boolean {
   )
 }
 
-/** @description Native classify tool (ceremony stamp) — top-level build only. */
+/** @description Native classify tool — top-level build only. */
 function isClassifyTool(toolName: unknown): boolean {
   if (typeof toolName !== "string") return false
   const n = toolName.toLowerCase()
@@ -67,16 +79,6 @@ function extractBashCommand(toolArgs: unknown): unknown {
   }
   const a = toolArgs as Record<string, unknown>
   return a.command ?? a.cmd
-}
-
-/** @description Detect shell forms that can replace or mutate execution-plan.json. */
-function mutatesExecutionPlan(command: unknown): boolean {
-  if (typeof command !== "string" || !/execution-plan\.json/i.test(command)) return false
-  return (
-    /(?:>|>>)\s*["']?[^\s"']*execution-plan\.json/i.test(command) ||
-    /\b(?:cp|mv|rsync|tee|rm|truncate)\b[^\n]*execution-plan\.json/i.test(command) ||
-    /\bsed\b[^\n]*\s-i(?:\s|$)[^\n]*execution-plan\.json/i.test(command)
-  )
 }
 
 /**
@@ -138,9 +140,10 @@ function defaultGitState(
 /**
  * @description git merge-base --is-ancestor sha HEAD → true / false / null.
  */
-function defaultIsAncestor(sha: string): boolean | null {
+function defaultIsAncestor(sha: string, cwd = process.cwd()): boolean | null {
   try {
     execFileSync("git", ["merge-base", "--is-ancestor", sha, "HEAD"], {
+      cwd,
       stdio: ["ignore", "ignore", "ignore"],
     })
     return true
@@ -158,30 +161,20 @@ function defaultIsAncestor(sha: string): boolean | null {
  * @description Builds entry-gate hooks (async load of pure decide mjs).
  * Optional deps override git/list/ancestor seams for tests.
  */
-export async function createEntryGateHooks(
+async function createEntryGateHooks(
   projectRoot: string,
   deps: EntryGateDeps = {},
-): Promise<Pick<Hooks, "tool.execute.before">> {
+): Promise<Pick<Hooks, "tool.execute.before" | "tool.execute.after" | "event">> {
   const root =
     typeof projectRoot === "string" && projectRoot.length > 0
       ? projectRoot
       : process.cwd()
+  const { isTaskTool, parseTaskDispatchIdentity } = await import("../lib/task-dispatch-identity.mjs")
+  const { extractHookTaskContext, resolveHookIdentity } = await import("./lib/hook-identity.mjs")
+  const { loadGateStateFromDisk } = await import("../lib/gate-state.mjs")
   const {
-    enforceDualFromDiskOrThrow,
-    extractHookTaskContext,
-    isTaskTool,
-    loadGateStateFromDisk,
-  } = await import("./lib/dual-enforcement.mjs")
-  const { parseTaskDispatchIdentity } = await import("./lib/task-dispatch-identity.mjs")
-  const { decideReviewCapBeforeWriting } = await import("./lib/loop-decide.mjs")
-  const { resolveHookIdentity } = await import("./lib/hook-identity.mjs")
-  const { validateCeremonyBinding } = await import("./lib/ceremony-binding.mjs")
-  const { validatePrivilegedMarkerSeals } = await import("./lib/marker-seal.mjs")
-  const { recoverCeremonyStep } = await import("./lib/ceremony-transition.mjs")
-  const { gateStatePath } = await import("../shared/lib/path-helpers.mjs")
-  const { withGateStateLock } = await import("./lib/gate-state.mjs")
-  const {
-    decideBashForge,
+    decideBashAdvisory,
+    applyAdvisory,
     decideBashDelivery,
     isDeliveryCommand,
     throwIfDenied: throwIfBashDenied,
@@ -189,18 +182,18 @@ export async function createEntryGateHooks(
   const {
     decideEntryTask,
     throwIfDenied: throwIfEntryDenied,
-  } = await import("./lib/entry-decide.mjs")
-  const { isDeliveryRole, isPlannerRole } = await import("./lib/roles.mjs")
+  } = await import("../lib/entry-decide.mjs")
+  const { isDeliveryRole } = await import("../lib/roles.mjs")
+  const { isExecutorRole, isSniperRole, isTestAuthorRole } = await import("../lib/roles.mjs")
+  const { claimDispatchForRuntime, bindChildSession, removeDispatchRecord } = await import("../lib/dispatch-scope.mjs")
+  const { recordTaskCompletion } = await import("./lib/host-hand-capture.mjs")
   const { computeGitState } = await import("../shared/lib/git-state.mjs")
-  const { listHandRecordsForFeature } = await import("./lib/hand-records.mjs")
-  const { readBoundPlanSnapshot } = await import("./lib/bound-plan.mjs")
-  const readBoundPlanFn =
-    deps.readBoundPlanFn ??
-    ((gateState: unknown) => readBoundPlanSnapshot(root, gateState))
+  const { listHandRecordsForFeature } = await import("../lib/hand-records.mjs")
 
   const gitStateFn =
     deps.gitStateFn ?? (() => defaultGitState(computeGitState))
-  const isAncestorFn = deps.isAncestorFn ?? defaultIsAncestor
+  const isAncestorFn = deps.isAncestorFn ?? ((sha: string) => defaultIsAncestor(sha, root))
+  const dispatchEnvironment = deps.dispatchEnvironment ?? process.env
   const listHandRecordsForFeatureFn =
     deps.listHandRecordsForFeatureFn ??
     ((featureId: string) => listHandRecordsForFeature(root, featureId))
@@ -216,6 +209,9 @@ export async function createEntryGateHooks(
         null
       return typeof a === "string" && a.trim() ? a.trim() : null
     })
+
+  const writingHand = (role: unknown) => isExecutorRole(role) || isSniperRole(role) || isTestAuthorRole(role)
+  const client = deps.client
 
   return {
     "tool.execute.before": async (input: any, output: any) => {
@@ -235,7 +231,7 @@ export async function createEntryGateHooks(
       const sessionId = identity.sessionIdSource === "runtime-envelope" ? identity.sessionId : null
       const subagentType = extractHookTaskContext(input, output).subagentType
 
-      // classify: top-level build only — hands/eyes/child sessions never start ceremony
+      // classify: top-level build only — hands/eyes/child sessions never classify
       if (isClassifyTool(toolName)) {
         const { decideClassifyAuthority } = await import(
           "../shared/lib/classify-authority.mjs"
@@ -262,54 +258,87 @@ export async function createEntryGateHooks(
 
       if (isBashOrShellTool(toolName)) {
         const command = extractBashCommand(toolArgs)
-        throwIfBashDenied(decideBashForge({ command }))
+
+        // [#516] Belt-and-suspenders choke-point: re-checks the raw command against the
+        // fleet-hardened DANGEROUS_BASH_DENYLIST directly (core/shared/lib/dangerous-bash-denylist.mjs),
+        // independent of whatever config.permission.bash the OC config merge (global ruleset ∪
+        // per-agent frontmatter) actually resolved to. This closes the load-bearing gap the
+        // denylist's own JSDoc documented: OpenCode resolves permission.bash with `findLast`
+        // (last match wins), and every agent the fleet actually dispatches
+        // (`opencode run --agent build`) used to declare its own `bash: allow` in frontmatter,
+        // which is merged AFTER the global ruleset and therefore shadowed every deny in the
+        // denylist for that agent. Part 1 of #516 removed those redundant per-agent overrides;
+        // this check survives even if a future agent is authored with `bash: allow` again, before
+        // the agents permission-lockdown test catches it in CI.
+        // Deliberately scoped to fleet dispatch only, keyed SOLELY on HARNESS_NOTIFY_PROJECT — the
+        // one signal `core/vps/cron-a-dispatch.mjs` sets UNCONDITIONALLY for every VPS dispatch
+        // (never guarded by an `if`). HARNESS_OC_DATA_HOME was deliberately dropped from this check
+        // (#516 adversarial review): `core/opencode/skills/triaging-requests/SKILL.md` already
+        // documents it as NOT a reliable headless/fleet signal — "a manually-started operator
+        // session on the VPS inherits it from the shell" — so keying on it here would have armed
+        // this choke-point (and its npx/node -e/bash -c/tar/source denies) against a live operator's
+        // own interactive SSH session on the VPS, exactly the interactive-path friction this
+        // choke-point must NOT reintroduce (see below). Mirrors the SAME scope DANGEROUS_BASH_DENYLIST's
+        // own JSDoc already documents ("[#499] a DELIBERATE, NARROW exception ... scoped to this
+        // one fleet-seeding function"). An unconditional (interactive-included) enforcement here
+        // would re-impose exactly the over-blocking friction (npx/node -e/bash -c/tar/source on
+        // ordinary local dev commands) that a separate, not-yet-executed roadmap item
+        // (oc-forge-wall-removal) exists to REMOVE from the interactive path — widening this
+        // choke-point to all sessions would silently contradict that already-documented design
+        // intent, so it stays fleet-scoped like its source constant.
+        const fleetDispatch = Boolean(process.env.HARNESS_NOTIFY_PROJECT)
+        if (fleetDispatch) {
+          let decideDangerousBashDenylist: ((command: string) => { allow: boolean; reason?: string }) | null = null
+          try {
+            ;({ decideDangerousBashDenylist } = await import(
+              "../shared/lib/dangerous-bash-denylist.mjs"
+            ))
+          } catch (err) {
+            // The backstop module itself is unavailable (e.g. missing from an old vendor) — an
+            // infra fault of this backstop, not a security decision: fail open, but LOUDLY, so a
+            // silently-broken choke-point is never mistaken for "nothing to deny" (#516 adversarial
+            // review — the sibling gate-state-unreadable fail-open at :387 already logs this way).
+            console.error(
+              `${PREFIX} denylist choke-point unavailable, allowing dispatch: ${err instanceof Error ? err.message : String(err)}`,
+            )
+          }
+          if (decideDangerousBashDenylist) {
+            const denylistDecision = decideDangerousBashDenylist(
+              typeof command === "string" ? command : "",
+            )
+            if (!denylistDecision.allow) {
+              throw new Error(
+                `${PREFIX} Blocked: ${denylistDecision.reason} (fleet bash denylist choke-point, ` +
+                  `independent of resolved permission.bash — issue #516).`,
+              )
+            }
+          }
+        }
+
+        applyAdvisory(decideBashAdvisory({ command, cwd: root }), output)
 
         const sid =
           typeof sessionId === "string" && sessionId.length > 0
             ? sessionId
             : undefined
         const loaded = loadGateStateFromDisk(root, { sessionId: sid })
-        if (isDeliveryCommand(command) && !loaded.ok) {
-          throw new Error(`${PREFIX} ${loaded.reason}`)
-        }
+        // Fail-open on unreadable/missing gate-state (Claude Code parity): an empty or
+        // unreadable gate-state is not itself grounds to block delivery — decideBashDelivery's
+        // own rails (branch/commits, regate, capture, real-file) still apply against {}.
         const gateState = loaded.ok ? loaded.state : {}
-        if (loaded.ok) {
-          const seals = validatePrivilegedMarkerSeals(gateState, {
-            sessionId: sid,
-            featureId: typeof gateState.feature_id === "string" ? gateState.feature_id : "",
-          })
-          if (!seals.ok && isDeliveryCommand(command)) throw new Error(`${PREFIX} ${seals.reason}`)
-          const binding = validateCeremonyBinding(gateState, {
-            sessionId: sid,
-            featureId: typeof gateState.feature_id === "string" ? gateState.feature_id : "",
-            required: ["brainstormed", "adversary_fired"],
-          })
-          if (!binding.ok && isDeliveryCommand(command)) throw new Error(`${PREFIX} ${binding.reason}`)
-        }
-        if (
-          gateState != null &&
-          typeof gateState === "object" &&
-          !Array.isArray(gateState) &&
-          (gateState as Record<string, unknown>).planner_status === "usable" &&
-          mutatesExecutionPlan(command)
-        ) {
-          throw new Error(`${PREFIX} Blocked: bound execution-plan.json is immutable until a new planner claim.`)
-        }
-
-        /** Delivery-only rails: never probe git/list/ancestor for non-delivery bash. */
+        /** git branch/commit probe is delivery-only (a real git shellout, fail-open on throw);
+         * isAncestorFn and listHandRecordsForFeatureFn are cheap lazy closures always safe to
+         * pass — decideBashDelivery only invokes them for delivery commands, spawn-hand.mjs
+         * dispatches, and the freeze-commit early trigger. */
         const deliveryExtras: {
           gitState?: ReturnType<typeof gitStateFn>
-          isAncestorFn?: typeof isAncestorFn
-          listHandRecordsForFeatureFn?: typeof listHandRecordsForFeatureFn
-          boundPlan?: unknown
         } = {}
         if (isDeliveryCommand(command)) {
-          deliveryExtras.gitState = gitStateFn()
-          deliveryExtras.isAncestorFn = isAncestorFn
-          deliveryExtras.listHandRecordsForFeatureFn =
-            listHandRecordsForFeatureFn
-          // A5: bound-plan snapshot for multitask capture coverage (fail-open → null).
-          deliveryExtras.boundPlan = readBoundPlanFn(gateState)
+          try {
+            deliveryExtras.gitState = gitStateFn()
+          } catch {
+            deliveryExtras.gitState = null
+          }
         }
 
         throwIfBashDenied(
@@ -317,7 +346,8 @@ export async function createEntryGateHooks(
             command,
             gateState,
             sessionId: sid ?? null,
-            gateStateLoadOk: loaded.ok,
+            isAncestorFn,
+            listHandRecordsForFeatureFn,
             ...deliveryExtras,
           }),
         )
@@ -331,93 +361,129 @@ export async function createEntryGateHooks(
           ? sessionId
           : undefined
       const loaded = loadGateStateFromDisk(root, { sessionId: sid })
+      // Fail-open ONLY when the gate-state FILE ITSELF is unreadable/corrupt (#482, mirrors
+      // Claude Code entry-gate.mjs): infra trouble reading gate-state.json is not evidence the
+      // dispatch itself is unsafe, and the real cost ceiling lives in the fleet engine
+      // (cron-a-exit.mjs/cron-review.mjs), outside the session. A missing/unsafe SESSION
+      // IDENTITY ("sessionId required…", "unsafe sessionId") is a different, foundational
+      // problem — we cannot know whose state to check — and stays fail-closed.
+      const gateStateUnreadable =
+        !loaded.ok && typeof loaded.reason === "string" && loaded.reason.startsWith("gate-state")
       if (!loaded.ok && isDeliveryRole(subagentType)) {
-        throw new Error(`${PREFIX} ${loaded.reason}`)
-      }
-      let gateState = loaded.ok ? loaded.state : {}
-
-      // Unified K=3 same-agent retry: block 4th dispatch after 3 failures of this role(/task).
-      if (subagentType && loaded.ok) {
-        const { decideAgentRetryAllowed, decideGateBlockedDispatchAllowed } = await import(
-          "../shared/lib/agent-retry.mjs"
-        )
-        const taskId = promptMarker.ok ? promptMarker.taskId : ""
-        const retry = decideAgentRetryAllowed(gateState, { role: subagentType, taskId })
-        if (!retry.ok) {
-          throw new Error(`${PREFIX} ${retry.reason}`)
-        }
-        // Separate bound for harness-gate denials: the agent keeps its budget, but a dispatcher
-        // that cannot satisfy the precondition still stops instead of re-dispatching forever.
-        const gateBlocked = decideGateBlockedDispatchAllowed(gateState, { role: subagentType, taskId })
-        if (!gateBlocked.ok) {
-          throw new Error(`${PREFIX} ${gateBlocked.reason}`)
+        if (gateStateUnreadable) {
+          console.error(`${PREFIX} gate-state unreadable, allowing dispatch: ${loaded.reason}`)
+        } else {
+          throw new Error(`${PREFIX} ${loaded.reason}`)
         }
       }
-      if (loaded.ok && isPlannerRole(subagentType) && sid) {
-        const stateFile = gateStatePath({ projectRoot: root, runtime: "opencode", sessionId: sid })
-        if (!stateFile.ok) throw new Error(`${PREFIX} ${stateFile.reason}`)
-        const persist = deps.ceremonyPersistFn ?? ((file, mutate) => withGateStateLock(file, mutate))
-        while (true) {
-          let recoveryError: Record<string, unknown> | null = null
-          let recoveredState: Record<string, unknown> | null = null
-          let complete = false
-          const persisted = persist(stateFile.path, (previous) => {
-            const recovery = recoverCeremonyStep(root, previous)
-            recoveredState = recovery.state
-            if (!recovery.ok) {
-              recoveryError = recovery.error
-              return previous
-            }
-            complete = recovery.complete
-            return recovery.changed ? recovery.state : previous
-          })
-          if (!persisted.ok) {
-            throw new Error(`${PREFIX} ${JSON.stringify({ code: "CEREMONY_PERSIST_FAILED", missing_proof: null, next_transition: null, reason: persisted.reason ?? "gate-state persistence failed" })}`)
-          }
-          if (recoveryError) throw new Error(`${PREFIX} ${JSON.stringify(recoveryError)}`)
-          gateState = recoveredState ?? gateState
-          if (complete) break
-        }
-      }
-      if (loaded.ok && isDeliveryRole(subagentType)) {
-        const seals = validatePrivilegedMarkerSeals(gateState, {
-          sessionId: sid,
-          featureId: typeof gateState.feature_id === "string" ? gateState.feature_id : "",
-        })
-        if (!seals.ok) throw new Error(`${PREFIX} ${seals.reason}`)
-      }
+      const gateState = loaded.ok ? loaded.state : {}
       const optionalIds = extractFeatureTaskIds(toolArgs)
       const featureId = identity.featureIdSource === "runtime-envelope"
         ? identity.featureId
         : typeof gateState.feature_id === "string" ? gateState.feature_id : optionalIds.featureId
       const taskId = identity.taskId || optionalIds.taskId
-      const binding = validateCeremonyBinding(gateState, {
-        sessionId: sid,
-        featureId,
-        required: isDeliveryRole(subagentType) ? ["brainstormed", "adversary_fired"] : [],
-      })
-      if (!binding.ok) throw new Error(`${PREFIX} ${binding.reason}`)
-
-      const reviewCap = decideReviewCapBeforeWriting({ subagentType, gateState })
-      if (reviewCap.decision === "deny") {
-        throw new Error(`${PREFIX} ${reviewCap.reason}`)
-      }
-
+      // What THIS dispatch declares as its planning target, independent of gate-state's own
+      // (possibly stale) feature_id. `featureId` above always collapses to gateState.feature_id
+      // once one exists, which would make decideEntryTask's planner featureMismatch check a
+      // tautology (always comparing gateState.feature_id to itself); this stays independent so a
+      // genuine mismatch — a planner Task declaring a DIFFERENT feature than gate-state —
+      // is actually reachable.
+      const dispatchFeatureId = identity.featureIdSource === "runtime-envelope"
+        ? identity.featureId
+        : optionalIds.featureId
       throwIfEntryDenied(
         decideEntryTask({
           subagentType,
           gateState,
           featureId,
+          dispatchFeatureId,
           taskId,
+          isAncestorFn,
         }),
       )
-
-      enforceDualFromDiskOrThrow(PREFIX, {
-        projectRoot: root,
-        toolName,
-        toolArgs,
-        sessionId: sid ?? null,
-      })
+      if (writingHand(subagentType)) {
+        const callId = typeof input?.callID === "string" ? input.callID : typeof input?.callId === "string" ? input.callId : ""
+        if (!sid || !callId || !taskId) {
+          if (dispatchEnvironment.HARNESS_FIX_MODE === "1") throw new Error(`${PREFIX} exact dispatch identity required in fix mode`)
+          return
+        }
+        const claimed = claimDispatchForRuntime(root, {
+          sessionId: sid,
+          callId,
+          role: subagentType,
+          taskId,
+          featureId,
+        }, { env: dispatchEnvironment, isAncestorFn })
+        if (!claimed.ok) throw new Error(`${PREFIX} exact dispatch record rejected: ${claimed.reason}`)
+      }
+    },
+    "tool.execute.after": async (input: any, output: any) => {
+      let sessionId = ""
+      let callId = ""
+      let cleanupExactRecord = false
+      try {
+        const { toolName, toolArgs, subagentType } = extractHookTaskContext(input, output)
+        if (!isTaskTool(toolName) || !writingHand(subagentType)) return
+        sessionId = typeof input?.sessionID === "string" ? input.sessionID : ""
+        callId = typeof input?.callID === "string" ? input.callID : ""
+        const prompt = toolArgs && typeof toolArgs === "object" && !Array.isArray(toolArgs) ? (toolArgs as Record<string, unknown>).prompt : undefined
+        const promptMarker = parseTaskDispatchIdentity(prompt)
+        const identity = resolveHookIdentity({ input, toolArgs, promptTaskId: promptMarker.ok ? promptMarker.taskId : "" })
+        if (!identity.ok || !sessionId || !callId) return
+        const loaded = loadGateStateFromDisk(root, { sessionId })
+        const optionalIds = extractFeatureTaskIds(toolArgs)
+        const featureId = identity.featureIdSource === "runtime-envelope"
+          ? identity.featureId
+          : loaded.ok && typeof loaded.state?.feature_id === "string" ? loaded.state.feature_id : optionalIds.featureId
+        const taskId = identity.taskId || optionalIds.taskId
+        if (featureId && taskId) {
+          const completion = recordTaskCompletion({
+          projectRoot: root,
+          sessionId,
+          featureId,
+          taskId,
+          role: subagentType,
+          producerCallId: callId,
+          outputText: String(output?.output ?? output?.content ?? output?.result ?? ""),
+          background: output?.metadata?.background === true,
+          })
+          cleanupExactRecord = completion.ok === true && completion.terminal === true && completion.capturePending !== true
+        }
+      } catch { /* terminal completion observation is best-effort */ }
+      finally {
+        if (cleanupExactRecord && sessionId && callId) removeDispatchRecord(root, { sessionId, callId })
+      }
+    },
+    event: async ({ event }: any) => {
+      try {
+        if (event?.type === "message.part.updated") {
+          const part = event?.properties?.part ?? event?.part
+          if (part?.type === "tool" && isTaskTool(part?.tool) && part?.state?.status === "error" && typeof part?.sessionID === "string" && typeof part?.callID === "string") {
+            removeDispatchRecord(root, { sessionId: part.sessionID, callId: part.callID })
+            return
+          }
+        }
+        if (event?.type !== "message.updated" || typeof client?.session?.get !== "function" || typeof client?.session?.messages !== "function") return
+        const info = event?.properties?.info
+        const childSessionId = typeof info?.sessionID === "string" ? info.sessionID : ""
+        if (!childSessionId || !writingHand(info?.agent)) return
+        const sessionResult = await client.session.get({ path: { id: childSessionId }, query: { directory: root } })
+        const session = sessionResult && typeof sessionResult === "object" && "data" in sessionResult ? (sessionResult as any).data : sessionResult
+        if (session?.id !== childSessionId) return
+        const parentSessionId = typeof session?.parentID === "string" ? session.parentID : ""
+        if (!parentSessionId) return
+        const messagesResult = await client.session.messages({ path: { id: parentSessionId }, query: { directory: root } })
+        const messages = messagesResult && typeof messagesResult === "object" && "data" in messagesResult ? (messagesResult as any).data : messagesResult
+        const matches: Array<{ callId: string, role: string }> = []
+        for (const bundle of Array.isArray(messages) ? messages : []) {
+          for (const part of Array.isArray(bundle?.parts) ? bundle.parts : []) {
+            const role = part?.state?.input?.subagent_type
+            if (bundle?.info?.role === "assistant" && bundle?.info?.sessionID === parentSessionId && part?.type === "tool" && isTaskTool(part?.tool) && part?.sessionID === parentSessionId && part?.messageID === bundle?.info?.id && part?.state?.status === "running" && part?.state?.metadata?.sessionId === childSessionId && typeof part?.callID === "string" && writingHand(role)) matches.push({ callId: part.callID, role })
+          }
+        }
+        if (matches.length !== 1) return
+        bindChildSession(root, { parentSessionId, childSessionId, role: matches[0].role, callId: matches[0].callId })
+      } catch { /* SDK faults leave scope unavailable; plan-write opens diagnostically */ }
     },
   }
 }
@@ -464,7 +530,8 @@ export const EntryGate: Plugin = async ({ directory, worktree, client }: any) =>
       return null
     }
   }
-  return createEntryGateHooks(root, { getSessionParentIdFn })
+  return createEntryGateHooks(root, { getSessionParentIdFn, client })
 }
+Object.defineProperty(EntryGate, "testApi", { value: Object.freeze({ createEntryGateHooks }) })
 
 export default EntryGate

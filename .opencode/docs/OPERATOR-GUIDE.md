@@ -88,10 +88,12 @@ Três coisas que mudam o resultado:
 |---|---|---|
 | **Sem cerimônia** | Pergunta, leitura, chat | Resposta direta |
 | **QUICK** | Hotfix óbvio, 1–2 arquivos, **nada sensível** | Inline / 1 mão + gates baratos |
-| **LIGHT** | Feature pequena, escopo claro | Spec → plano → loop leve → dual final |
-| **FULL** | Multi-arquivo, risco, ou path sensível | Loop completo + dual + demo + trilhos de ship |
+| **LIGHT** | Feature pequena, escopo claro | Spec → plano → loop leve → review final |
+| **FULL** | Multi-arquivo, risco, ou path sensível | Loop completo + review final + demo + trilhos de ship |
 
 **Só sobe de modo, nunca rebaixa** pedido sensível com “faz rápido”.
+
+Leitura/chat (sem cerimônia) **não prende** feature; troca de feature no meio de LIGHT/FULL continua negada — use sessão nova só se já estiver em entrega.
 
 **Paths que forçam FULL** (allowlist no `AGENTS.md`): auth, payment, billing, SQL, migrations, `.env*`, e `package.json` quando mexe em deps.
 
@@ -111,7 +113,7 @@ oc-triaging-requests
       oc-brainstorming  ── HARD-GATE: você aprova a spec ──►
             │
             ▼
-      planner (plano JSON) ── validate-plan ── plan-reviewer dual ── HARD-GATE
+      planner (plano JSON) ── validate-plan ── plan-reviewer ── HARD-GATE
             │
             ▼
       por task: test-author → executor → compliance
@@ -119,7 +121,7 @@ oc-triaging-requests
                → sniper (se preciso) → gates / regate
             │
             ▼
-      dual final → demo (interativo) → harvester → shipper (PR)
+      review final → demo (interativo) → harvester → shipper (PR)
 ```
 
 **Interativo:** você aprova spec/plano/demo.  
@@ -138,11 +140,11 @@ oc-triaging-requests
 | Maestro da sessão | `build` | coordenador |
 | Descoberta conversacional | `plan` | primary read-only |
 | Arquiteto do plano | `planner` | olho |
-| Revisor de plano | `plan-reviewer-family-1` (+ family-2) | olho dual |
+| Revisor de plano | `plan-reviewer` (+ optional family-2 when secondEyeModel) | olho |
 | Implementador | `executor-low` / `medium` / `high` | **mão** |
 | Autor do teste travado | `test-author` | mão |
 | Fiscal de critérios | `compliance` | olho |
-| Advogado do diabo | `adversary-family-1` (+ family-2) | olho dual |
+| Advogado do diabo | `adversary` (+ optional family-2 when secondEyeModel) | olho |
 | Corretor cirúrgico | `sniper-*` | mão |
 | Segurança | `security` | olho |
 | Colheita de aprendizado | `harvester` | mão (docs) |
@@ -150,7 +152,7 @@ oc-triaging-requests
 
 **Mãos** = escrevem código/testes (modelos mais baratos).  
 **Olhos** = leem e julgam (modelos mais fortes).  
-**Spawn** (`*-spawn`): gêmeos `mode: primary` só para CLI `opencode run` — ver `.opencode/docs/SPAWN-PATTERN.md`.
+**Spawn CLI:** usa os mesmos agentes `mode: all`; o adapter fixa o modelo do tier via `--model` — ver `.opencode/docs/SPAWN-PATTERN.md`.
 
 ---
 
@@ -225,8 +227,8 @@ As demais continuam sendo skills que o `build` carrega quando o pedido é claro:
 1. Roda no `harness-config` (interativo) — o comando troca o agent da sessão.  
 2. Mostra o mapa atual (quem é olho / mão).  
 3. Presets **dual-safe** (dois providers):
-   - `openai-ollama-default` — default shippado  
-   - `xai-ollama-dual` — olhos Grok + family-2/hands Ollama  
+   - `openai-ollama-default` — default shippado (mãos Luna → Terra)
+   - `xai-ollama-dual` — olhos Grok + second eye opt-in/hands Ollama  
 4. Aplica em **todos** os pontos:  
    `harness.routing.json` · frontmatter de **todos** os agents · `AGENTS.md` §8 · `opencode.json`  
 5. **Reinicia a sessão.**
@@ -234,7 +236,7 @@ As demais continuam sendo skills que o `build` carrega quando o pedido é claro:
 **Regras duras (não são “dica”):**
 
 - Dual exige **providers diferentes** (não existe preset “tudo Grok”).  
-- Aplicar Grok num slot obrigatório do **source** do monorepo do harness exige flag explícita (CI bloqueia). O segundo par de olhos (family-2) já é Grok por default.  
+- Aplicar Grok num slot obrigatório do **source** do monorepo do harness exige flag explícita (CI bloqueia). O segundo olho (`secondEyeModel`) é **opt-in** (ausente por padrão); quando ligado, o stub `*-family-2` usa o modelo configurado.  
 - Preferir aplicar no **projeto** (`.opencode/`).
 
 Engine determinístico:  
@@ -293,15 +295,14 @@ Você não configura plugin a plugin no dia a dia. Eles **barram** atalhos:
 | Sintoma | Causa comum | O que fazer |
 |---|---|---|
 | “Planner negado” / cerimônia | Spec ainda não passou brainstorm + ataque | Completar brainstorm; não pular pro plano |
-| Executor bloqueado após review do plano | **REVISE** no dual de plano (`plan_verdict`) | Corrigir o plano; dual **both** sozinho **não** libera se foi REVISE |
+| Executor bloqueado após review do plano | **REVISE** no review do plano (`plan_verdict`) | Corrigir o plano; o segundo olho opcional não substitui o **APPROVE** principal |
 | Push / PR bloqueado: captura | Falta hand-record DONE + `capture-verified` numa task terminada | A mão precisa terminar de verdade; prosa “pronto” não conta |
 | Push bloqueado: task do plano sem evidência | **Uma writing task do plano nunca foi despachada** (nem hand-record, nem captura) — feature ia subir pela metade | Despachar a mão de cada task que falta antes de entregar. Não bloqueia `DONE_WITH_CONCERNS` (shippable) nem se o plano não puder ser lido (fail-open) |
 | Push bloqueado: regate | Correção grave (sniper-high) sem re-auditoria | Rodar adversary de regate + `regate-passed` |
-| Push FULL bloqueado: final / demo | Falta review final (ou demo no interativo) | Completar dual final; no interativo, demo quando pedido |
-| Harvester bloqueado | `findings.md` ausente | Garantir que o loop gravou findings antes do harvest |
+| Push FULL bloqueado: final / demo | Falta review final (ou demo no interativo) | Completar review final; no interativo, demo quando pedido |
 | Comportamento “meio velho” | Update/routing sem restart | Reiniciar sessão OpenCode |
 
-**Dual de olho:** family-1 obrigatória; family-2 opcional e fail-open (se o 2º provider cair, segue com aviso — não inventa dual completo).
+**Avaliador único** por padrão. Segundo olho (`secondEyeModel`) é opt-in e fail-open (se o 2º provider cair, segue com aviso — não finge que o segundo olho rodou).
 
 **Por que um olho falhou (forense):** quando um review/eye falha, o gate-state registra a causa **classificada** em `last_provider_diagnostic` (e conta em `review_failure_counts`) — `rate_limited`, `credit`, `unauthenticated`, `timeout`, `upstream_5xx` (5xx do provider), `provider_error` (desconhecido) ou `gate_blocked` (um portão **interno** do harness barrou, não é falha de provider). Assim dá pra distinguir “o xAI/Ollama caiu” de “bati num gate meu” sem caçar no log. O diagnóstico é sanitizado (sem segredos).
 
@@ -325,10 +326,11 @@ Você não configura plugin a plugin no dia a dia. Eles **barram** atalhos:
 |---|---|
 | `classify` | Grava modo + feature no gate-state (fim do triage) |
 | `validate-plan` | Valida o JSON do plano |
-| `mark` | Carimbos privilegiados (hand-finished, capture-verified, dual, regate, final-review…) — **não** use Bash pra isso |
-| `ceremony-next` | Próximo passo allowlisted após denial de cerimônia |
+| `mark` | Carimbos privilegiados (hand-finished, capture-verified, regate, final-review…) — **não** use Bash pra isso |
 | `verify` | Roda teste pinado da task (hand ativa) |
 | `complexity-scorer` | Banda low/medium/high de um path |
+
+Quando o planner estiver bloqueado por cerimônia, complete somente o fato ausente para a feature classificada: `brainstormed` ausente → execute o brainstorming e chame a ação nativa `mark`; `adversary_fired` ausente → despache o adversary primário e chame a ação nativa `mark`. O planner libera quando encontra os dois booleans crus e a feature correspondente no gate-state; isso não prova proveniência on-disk. O caminho oficial continua sendo a tool nativa, e edição direta é proibida por convenção/permissões.
 
 ---
 
@@ -337,10 +339,10 @@ Você não configura plugin a plugin no dia a dia. Eles **barram** atalhos:
 1. **Uma intenção por sessão** quando possível (feature vs “só atualizar harness”).  
 2. **Decisões de produto** no brainstorm — não deixe o modelo escolher sozinho o “o quê”.  
 3. **Tab `plan`** quando ainda não sabe o desenho; **`build`** quando quer entrega.  
-4. Se OpenAI falhar: skill **`oc-configuring-model-routing`** → preset dual com outro provider (ex. Grok + Ollama).  
+4. Se OpenAI falhar: skill **`oc-configuring-model-routing`** → configure outro provider ou um segundo olho opcional.
 5. Depois de update ou routing: **restart**.  
 6. Leia denials de portão como **mensagem de produto** (“falta prova da mão”), não como “bug aleatório” — a menos que o smoke diga o contrário.  
-7. **Nunca** peça pra afrouxar dual / capture / regate “só pra passar” — isso é o valor do harness.
+7. **Nunca** peça pra afrouxar review / capture / regate “só pra passar” — isso é o valor do harness.
 
 ---
 
@@ -350,13 +352,10 @@ Você não configura plugin a plugin no dia a dia. Eles **barram** atalhos:
 |---|---|
 | `AGENTS.md` (raiz, bloco harness) | Entry policy, routing, paths, security |
 | `.opencode/docs/OPERATOR-GUIDE.md` | **Este guia** |
-| `.opencode/docs/SPAWN-PATTERN.md` | Por que existem `*-spawn` |
+| `.opencode/docs/SPAWN-PATTERN.md` | Como a mesma mão serve Task e CLI |
 | `.opencode/skills/*/SKILL.md` | Contrato de cada skill |
 | `.opencode/harness.routing.json` | Modelos atuais |
 | `.opencode/agents/*.md` | Prompt e permissões de cada papel |
-
-No monorepo do harness (desenvolvedores do framework):  
-`docs/opencode-implementation-playbook.md` é **engenharia de batches**, não onboarding de operador.
 
 ---
 

@@ -1,12 +1,15 @@
 ---
-description: Implements HIGH-complexity tasks (band 31+ residual reasoning). Ollama Cloud hand (kimi-k2.7-code). Stays strictly inside scope_paths. In-session loop uses mode subagent; CLI cheap-hand uses executor-high-spawn (mode primary).
-mode: subagent
-model: ollama-cloud/kimi-k2.7-code
+description: Implements HIGH-complexity tasks (band 31+ residual reasoning). OpenAI Terra hand. Stays strictly inside scope_paths.
+mode: all
+model: openai/gpt-5.6-terra
 temperature: 0.1
+steps: 80
+tools:
+  task: false
 permission:
   classify: deny
   edit: allow
-  bash: allow
+  bash: deny
 ---
 
 # Executor (HIGH tier)
@@ -38,10 +41,12 @@ If a judgment needed to make a decision is **missing**, emit `NEEDS_CONTEXT` imm
 ### scope_paths are the boundary
 **BLOCKED** if you need to write outside the declared `scope_paths`. Report `BLOCKED` with the conflicting path; do not write the file.
 
+Never stage, unstage, commit, or otherwise mutate the Git index. Host capture owns Git evidence; use `git status`/`git diff` only for inspection.
+
 ### locked_tests are immutable gates
 Never edit, delete, or rename files that contain `locked_tests`. They are the acceptance gate — your job is to make them pass, not to change them.
 
-For targeted Vitest, call native `verify` with the exact feature/task ids, `denied_class: "targeted_vitest"`, and the exact snapshot `locked_tests[].path`. Only this runtime-bound active hand may execute the returned descriptor. Never use package launchers, globs, options, or interpreter workarounds. On rejection, `no_equivalent`, `setup_missing`, or `repeated`, report `BLOCKED`; do not guess again.
+You have no Bash. The parent conductor runs the frozen test and all project gates after your hand finishes; report any setup constraint under `Findings` rather than changing the oracle or its runner.
 
 ### JSDoc on every new file
 New `.ts` / `.tsx` files require `/** @description ... */` at the top per project code-quality rules.

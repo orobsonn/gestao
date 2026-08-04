@@ -29,12 +29,19 @@ This skill runs inside the `build` (primary) agent. Its output is the approved (
 ## Interactive vs headless
 
 - **INTERACTIVE:** ask the operator **one question at a time**; present design; wait for approval.
-- **HEADLESS** (autonomous / VPS cron / `$HARNESS_OBSERVABILITY_RUN_PATH` / `$HARNESS_OC_DATA_HOME` / trigger says "without asking"): **do not wait for a human**. Simulate exploration with **read-only** investigation + optional fan-out `task` exploration lenses (user-journeys, edge-cases, constraints), synthesize a spec from the trigger + codebase, then run **spec-adversary** (`adversary` dual if configured). If blocking product decisions cannot be resolved from the trigger, stop and comment on the issue/PR — do not invent product judgments silently.
+- **Autonomy directive — AUTONOMOUS (local):** when the operator explicitly says "sem parar", "sem me perguntar", or
+  equivalent, record `autonomy_directive: enabled` in the spec/decision ledger and use the HEADLESS
+  evidence-and-adversary workflow without waiting. This directive persists for the feature/session.
+  Ask only when two viable choices change the observable product behavior or contract; select and record
+  the least-invasive engineering option when the contract is the same.
+- **HEADLESS** (autonomous / VPS cron / `$HARNESS_OBSERVABILITY_RUN_PATH` / `$HARNESS_OC_DATA_HOME` / trigger says "without asking"): **do not wait for a human**. Simulate exploration with **read-only** investigation + optional fan-out `task` exploration lenses (user-journeys, edge-cases, constraints), synthesize a spec from the trigger + codebase, then run one primary **spec-adversary**. Dispatch an optional second eye only when routing explicitly configures one via `secondEyeModel` or legacy `families.family-2`; catalog presence alone is not authorization. If blocking product decisions cannot be resolved from the trigger, stop and comment on the issue/PR — do not invent product judgments silently.
 
 Start by understanding the current project context (files, MEMORY, AGENTS). Interactive: refine with the operator. Headless: refine from trigger + investigation.
 
 <HARD-GATE>
 **INTERACTIVE:** Do NOT produce a final spec, dispatch the planner, write code, or implement until you have presented a design and the operator has approved it.
+**AUTONOMOUS:** Do NOT dispatch the planner until a written spec exists AND the upfront adversary pass has
+run. The adversary validates engineering completeness; it never substitutes an unresolved product choice.
 **HEADLESS:** Do NOT dispatch the planner until a written spec exists AND the upfront adversary pass has run (blocking issues stop the run). Operator approval is replaced by multi-agent validation — never "auto-approve blindly" without investigation + adversary.
 </HARD-GATE>
 
@@ -81,7 +88,7 @@ Every task goes through this. "Simple" tasks are where unexamined assumptions ca
 ## After the Design
 
 **Documentation:**
-- Write the validated design to the canonical runtime path `.opencode/plans/<sessionID>-<feature_id>/spec.md`. Optionally mirror it to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` when a durable project document is wanted. **When run inside `build` (whose `edit` is denied), write via bash** — do not try the edit/write tool.
+- Write the validated design to the canonical runtime path `.opencode/plans/<sessionID>-<feature_id>/spec.md`. Optionally mirror it to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` when a durable project document is wanted. **When run inside `build`, write it directly with the edit tool** (`agents/build.md`: `edit: allow`) — older revisions of this skill said `edit` was denied there and instructed a bash workaround; that predates the current `build.md` and no longer applies.
 - Commit only the durable docs copy (via `oc-committing-changes`); the runtime spec remains session state.
 
 **Spec self-review** — look with fresh eyes:
