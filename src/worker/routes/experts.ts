@@ -1,4 +1,4 @@
-/** @description Experts tenant CRUD routes — admin writes, member reads, soft-delete with children guard. */
+/** @description Experts tenant CRUD routes — admin writes, member+ reads, soft-delete with children guard. */
 
 import type { Hono } from 'hono'
 import { z } from 'zod'
