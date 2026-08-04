@@ -20,7 +20,7 @@
     {
       "binding": "DB",
       "database_name": "gestao-db",
-      "database_id": "local-gestao-db",
+      "database_id": "dd58c125-2a8f-406c-8aa6-bef02027d0e9",
       "migrations_dir": "migrations"
     }
   ]
