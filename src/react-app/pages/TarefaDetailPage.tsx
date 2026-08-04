@@ -172,11 +172,11 @@ export function TarefaDetailPage() {
         notas: notas,
       });
       const updated = await patchTarefa(routeId, {
-        titulo: body.titulo,
+        titulo: body.titulo ?? "",
         dono_id: body.dono_id,
         prazo: body.prazo,
         status: body.status as TarefaStatus,
-        notas: body.notas,
+        notas: body.notas ?? "",
       });
       setTarefa(updated);
       applyTarefaToForm(updated);

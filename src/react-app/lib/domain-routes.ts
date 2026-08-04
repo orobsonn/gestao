@@ -172,7 +172,6 @@ export function resolveDomainBreadcrumbSegments(input: {
 
   const tarefaOnly = pathname.match(/^\/tarefas\/([^/]+)$/);
   if (tarefaOnly) {
-    const tarefaId = tarefaOnly[1];
     return [
       {
         label: names.tarefa ?? "Tarefa",
