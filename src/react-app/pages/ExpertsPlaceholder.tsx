@@ -1,24 +1,8 @@
-/** @description Placeholder Experts page until domain list lands. */
+/** @description Thin re-export of Experts/Campanha UI contracts from domain-api. */
 
-import {
-  Card,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-
-/**
- * @description Temporary Experts surface with pt-br title.
- */
-export function ExpertsPlaceholder() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Experts</CardTitle>
-        <CardDescription>
-          Lista de experts da empresa — em breve.
-        </CardDescription>
-      </CardHeader>
-    </Card>
-  );
-}
+export {
+  buildCreateCampanhaBody,
+  EXPERTS_PAGE_HEADING,
+  shouldShowDomainCreateActions,
+  type CreateCampanhaFields,
+} from "@/lib/domain-api";

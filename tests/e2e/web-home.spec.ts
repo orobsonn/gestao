@@ -1,4 +1,4 @@
-/** @description E2E da Home dashboard — KPIs, lens admin/membro, stub de tarefa e tema. */
+/** @description E2E da Home dashboard — KPIs, lens admin/membro, detalhe live de tarefa e tema. */
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { LoginPage } from "../pages/login.page";
@@ -144,9 +144,9 @@ test.describe("Home dashboard", () => {
   });
 
   /**
-   * @description Clique em linha de tarefa navega ao stub /tarefas/:id com volta à Home.
+   * @description Clique em linha de tarefa abre TarefaDetailPage live; Voltar vai à campanha.
    */
-  test("lt-e2e-task-row-navigates-stub", async ({ page }) => {
+  test("lt-e2e-home-task-row-opens-detail", async ({ page }) => {
     const login = new LoginPage(page);
     const home = homeLocators(page);
 
@@ -158,15 +158,25 @@ test.describe("Home dashboard", () => {
     await home.firstTaskRow.click();
 
     await expect(page).toHaveURL(/\/tarefas\/[^/]+$/);
+
     await expect(
       page.getByText(/detalhe da tarefa — em breve/i),
-    ).toBeVisible();
+    ).toHaveCount(0);
 
-    const backHome = page.getByRole("link", { name: /voltar para home/i });
-    await expect(backHome).toBeVisible();
-    await backHome.click();
-    await expect(page).toHaveURL("/");
-    await expect(home.heading).toBeVisible();
+    const liveForm = page
+      .getByRole("heading", { name: /^tarefa$/i })
+      .or(page.getByRole("button", { name: /^salvar$/i }))
+      .or(page.locator("#tarefa-detail-titulo"));
+    await expect(liveForm.first()).toBeVisible({ timeout: 20_000 });
+
+    await expect(
+      page.getByRole("link", { name: /voltar para home/i }),
+    ).toHaveCount(0);
+
+    const voltar = page.getByRole("button", { name: /^voltar$/i });
+    await expect(voltar).toBeVisible();
+    await voltar.click();
+    await expect(page).toHaveURL(/\/experts\/[^/]+\/campanhas\/[^/]+$/);
   });
 
   /**

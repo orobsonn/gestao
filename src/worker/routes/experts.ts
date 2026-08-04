@@ -19,20 +19,77 @@ const patchExpertBodySchema = z
   })
   .strict()
 
-/** @description Live expert row returned by list/get. */
+/** @description Live expert row returned by list (with open/late task counts). */
+export type ExpertListRow = {
+  id: string
+  nome: string
+  abertas: number
+  atrasadas: number
+}
+
+/** @description Live expert row returned by get/create/patch (id + nome only). */
 export type ExpertRow = {
   id: string
   nome: string
 }
 
 /**
- * @description List live experts of a single empresa (tenant-scoped, deleted_at IS NULL).
+ * @description Coerce a SQL count cell to a non-negative number.
  */
-async function listExperts(db: DbLike, empresaId: string): Promise<ExpertRow[]> {
+function asCount(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === 'bigint') {
+    return Number(value)
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value)
+    if (Number.isFinite(n)) return n
+  }
+  return 0
+}
+
+/**
+ * @description List live experts of a single empresa with open/late task counts.
+ * Counts match home open-task predicates (LD-13): live = t.deleted_at IS NULL only;
+ * abertas = status != feito; atrasadas = open set plus prazo IS NOT NULL AND prazo < date('now').
+ * Join tarefas→campanhas→experts; do not filter campanhas.status.
+ */
+async function listExperts(
+  db: DbLike,
+  empresaId: string,
+): Promise<ExpertListRow[]> {
   const stmt = db.prepare(
-    `SELECT id, nome FROM experts
-     WHERE empresa_id = ? AND deleted_at IS NULL
-     ORDER BY nome ASC`,
+    `SELECT
+       e.id AS id,
+       e.nome AS nome,
+       COUNT(
+         CASE
+           WHEN t.id IS NOT NULL
+            AND t.deleted_at IS NULL
+            AND t.status != 'feito'
+           THEN 1
+         END
+       ) AS abertas,
+       COUNT(
+         CASE
+           WHEN t.id IS NOT NULL
+            AND t.deleted_at IS NULL
+            AND t.status != 'feito'
+            AND t.prazo IS NOT NULL
+            AND t.prazo < date('now')
+           THEN 1
+         END
+       ) AS atrasadas
+     FROM experts e
+     LEFT JOIN campanhas c
+       ON c.expert_id = e.id AND c.empresa_id = e.empresa_id
+     LEFT JOIN tarefas t
+       ON t.campanha_id = c.id AND t.empresa_id = e.empresa_id
+     WHERE e.empresa_id = ? AND e.deleted_at IS NULL
+     GROUP BY e.id, e.nome
+     ORDER BY e.nome ASC`,
   )
 
   if (!stmt.all) {
@@ -40,10 +97,15 @@ async function listExperts(db: DbLike, empresaId: string): Promise<ExpertRow[]> 
   }
   const rows = await Promise.resolve(stmt.all(empresaId))
 
-  const result: ExpertRow[] = []
+  const result: ExpertListRow[] = []
   for (const row of rows) {
     if (typeof row.id === 'string' && typeof row.nome === 'string') {
-      result.push({ id: row.id, nome: row.nome })
+      result.push({
+        id: row.id,
+        nome: row.nome,
+        abertas: asCount(row.abertas),
+        atrasadas: asCount(row.atrasadas),
+      })
     }
   }
   return result

@@ -1,5 +1,5 @@
 /**
- * Locked HomePage UI paths, heading, KPI theme tokens, and tarefa detail stub contracts.
+ * Locked HomePage UI paths, heading, KPI theme tokens, and live tarefa detail path contracts.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -8,11 +8,8 @@ import {
   HOME_KPI_THEME_CLASSES,
   HOME_PAGE_HEADING,
 } from "../src/react-app/lib/home-api.ts";
-import {
-  buildTarefaDetailPath,
-  TAREFA_DETAIL_BACK_HREF,
-  TAREFA_DETAIL_STUB_MESSAGE,
-} from "../src/react-app/lib/shell-routes.ts";
+import { buildTarefaDetailPath } from "../src/react-app/lib/shell-routes.ts";
+import { buildTarefaBackPath } from "../src/react-app/lib/domain-routes.ts";
 
 const HEX_COLOR_RE = /#[0-9a-fA-F]{3,8}/;
 const THEME_SEMANTIC_NEEDLES = [
@@ -85,9 +82,10 @@ test("lt-kpi-theme-tokens-no-hex", () => {
 });
 
 /**
- * @description Tarefa detail stub message is 'Detalhe da tarefa — em breve' and back link target is '/'.
+ * @description Live tarefa detail contract: back path is campaign list, not Home; stub message is not required.
  */
-test("lt-stub-copy-constant", () => {
-  assert.equal(TAREFA_DETAIL_STUB_MESSAGE, "Detalhe da tarefa — em breve");
-  assert.equal(TAREFA_DETAIL_BACK_HREF, "/");
+test("lt-stub-constants-retired-or-updated", () => {
+  const back = buildTarefaBackPath({ id: "c1", expert_id: "e1" });
+  assert.equal(back, "/experts/e1/campanhas/c1");
+  assert.notEqual(back, "/");
 });

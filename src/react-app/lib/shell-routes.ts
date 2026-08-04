@@ -17,14 +17,8 @@ export const SHELL_AUTH_PATHS = [
 /** @description Prefix for tarefa detail routes under the shell (`/tarefas/:id`). */
 export const TAREFA_DETAIL_PATH_PREFIX = "/tarefas/";
 
-/** @description Stub copy on the tarefa detail placeholder page. */
-export const TAREFA_DETAIL_STUB_MESSAGE = "Detalhe da tarefa — em breve";
-
-/** @description Back-link target from the tarefa detail stub to Home. */
-export const TAREFA_DETAIL_BACK_HREF = "/";
-
 /**
- * @description Build the shell path for a tarefa detail stub: `/tarefas/${id}`.
+ * @description Build the shell path for a tarefa detail: `/tarefas/${id}`.
  */
 export function buildTarefaDetailPath(id: string): string {
   return `${TAREFA_DETAIL_PATH_PREFIX}${id}`;
@@ -32,7 +26,8 @@ export function buildTarefaDetailPath(id: string): string {
 
 /**
  * @description True when path is a shell-auth-protected route (not platform).
- * Exact SHELL_AUTH_PATHS plus parameterized `/tarefas/:id` detail routes.
+ * Exact SHELL_AUTH_PATHS plus parameterized `/tarefas/:id`, `/experts/:id`,
+ * and `/experts/:id/campanhas/:id` (non-empty segments only).
  */
 export function isShellAuthPath(path: string): boolean {
   if ((SHELL_AUTH_PATHS as readonly string[]).includes(path)) {
@@ -43,6 +38,14 @@ export function isShellAuthPath(path: string): boolean {
     path.startsWith(TAREFA_DETAIL_PATH_PREFIX) &&
     path.length > TAREFA_DETAIL_PATH_PREFIX.length
   ) {
+    return true;
+  }
+  // `/experts/:expertId/campanhas/:campanhaId` — both segments non-empty
+  if (/^\/experts\/[^/]+\/campanhas\/[^/]+$/.test(path)) {
+    return true;
+  }
+  // `/experts/:expertId` — expert id non-empty (not bare `/experts/`)
+  if (/^\/experts\/[^/]+$/.test(path)) {
     return true;
   }
   return false;

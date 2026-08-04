@@ -106,3 +106,29 @@ test("lt-ac-19-2-mode-toggle-uses-system-default", () => {
   assert.deepEqual([...THEME_MODES].sort(), ["dark", "light", "system"].sort());
   assert.equal(THEME_MODES.length, 3);
 });
+
+/**
+ * @description Nested expert and campanha paths are shell-auth; trailing-empty and /platform are not.
+ */
+test("lt-shell-auth-nested-expert-campanha", () => {
+  assert.equal(isShellAuthPath("/experts/exp-1"), true);
+  assert.equal(isShellAuthPath("/experts/exp-1/campanhas/cam-1"), true);
+  assert.equal(isShellAuthPath("/experts/"), false);
+  assert.equal(isShellAuthPath("/experts/exp-1/campanhas/"), false);
+  assert.equal(isShellAuthPath("/platform"), false);
+});
+
+/**
+ * @description Baseline shell paths stay shell-auth; LOGIN and PLATFORM remain non-shell-auth.
+ */
+test("lt-shell-auth-keeps-baseline", () => {
+  for (const path of ["/", "/experts", "/meu-trabalho", "/admin", "/tarefas/abc"]) {
+    assert.equal(
+      isShellAuthPath(path),
+      true,
+      `${path} must be shell-auth`,
+    );
+  }
+  assert.equal(isShellAuthPath(LOGIN_PATH), false);
+  assert.equal(isShellAuthPath(PLATFORM_PATH), false);
+});
