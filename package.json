@@ -12,7 +12,10 @@
     "db:migrate": "wrangler d1 migrations apply gestao-db --remote",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "node --experimental-strip-types --test"
+    "test": "node --experimental-strip-types --test",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "e2e:seed": "node scripts/e2e-seed.mjs"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
@@ -46,6 +49,7 @@
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.15.3",
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.1.17",
     "@types/node": "^26.1.2",
     "@types/react": "^19.2.7",

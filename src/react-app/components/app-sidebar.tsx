@@ -1,9 +1,22 @@
 /** @description App sidebar — nav by active papel, empresa switcher, user footer, platform link. */
 
-import { Building2, ChevronsUpDown, LogOut, Shield } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import {
+  Briefcase,
+  Building2,
+  ChevronsUpDown,
+  Home,
+  LogOut,
+  Settings2,
+  Shield,
+  Users,
+} from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { resolveActivePapel } from "@/lib/active-papel";
-import { buildSidebarNavItems } from "@/lib/nav";
+import {
+  buildSidebarNavItems,
+  type NavIconKey,
+} from "@/lib/nav";
 import { PLATFORM_PATH } from "@/lib/shell-routes";
 import { useAuth } from "@/providers/auth-provider";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -27,6 +40,13 @@ import {
   SidebarMenuItem,
   SidebarRail,
 } from "@/components/ui/sidebar";
+
+const NAV_ICONS: Record<NavIconKey, LucideIcon> = {
+  home: Home,
+  experts: Users,
+  "meu-trabalho": Briefcase,
+  admin: Settings2,
+};
 
 /**
  * @description Initials from display name for avatar fallback.
@@ -74,12 +94,13 @@ export function AppSidebar() {
                 <DropdownMenuTrigger asChild>
                   <SidebarMenuButton
                     size="lg"
+                    tooltip={activeEmpresa?.nome ?? "Selecionar empresa"}
                     className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
                   >
-                    <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
+                    <div className="flex aspect-square size-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
                       <Building2 className="size-4" />
                     </div>
-                    <div className="grid flex-1 text-left text-sm leading-tight">
+                    <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
                       <span className="truncate font-semibold">
                         {activeEmpresa?.nome ?? "Selecionar empresa"}
                       </span>
@@ -87,11 +108,11 @@ export function AppSidebar() {
                         {activePapel ?? "sem papel"}
                       </span>
                     </div>
-                    <ChevronsUpDown className="ml-auto size-4" />
+                    <ChevronsUpDown className="ml-auto size-4 shrink-0" />
                   </SidebarMenuButton>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
-                  className="w-[--radix-dropdown-menu-trigger-width] min-w-56 rounded-lg"
+                  className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-56 rounded-lg"
                   align="start"
                   side="bottom"
                   sideOffset={4}
@@ -116,11 +137,15 @@ export function AppSidebar() {
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : (
-              <SidebarMenuButton size="lg" className="pointer-events-none">
-                <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
+              <SidebarMenuButton
+                size="lg"
+                tooltip="Gestão"
+                className="pointer-events-none"
+              >
+                <div className="flex aspect-square size-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
                   <Building2 className="size-4" />
                 </div>
-                <div className="grid flex-1 text-left text-sm leading-tight">
+                <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
                   <span className="truncate font-semibold">Gestão</span>
                   <span className="truncate text-xs text-muted-foreground">
                     Sem empresa
@@ -138,6 +163,7 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {navItems.map((item) => {
+                const Icon = NAV_ICONS[item.icon];
                 const isActive =
                   item.path === "/"
                     ? pathname === "/"
@@ -151,6 +177,7 @@ export function AppSidebar() {
                       tooltip={item.label}
                     >
                       <Link to={item.path}>
+                        <Icon className="size-4 shrink-0" />
                         <span>{item.label}</span>
                       </Link>
                     </SidebarMenuButton>
@@ -168,33 +195,37 @@ export function AppSidebar() {
             <SidebarMenuItem>
               <SidebarMenuButton asChild tooltip="Plataforma">
                 <Link to={PLATFORM_PATH}>
-                  <Shield className="size-4" />
+                  <Shield className="size-4 shrink-0" />
                   <span>Plataforma</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
           ) : null}
           <SidebarMenuItem>
-            <div className="flex items-center gap-2 px-2 py-1.5">
-              <Avatar className="h-8 w-8">
+            <SidebarMenuButton
+              size="lg"
+              tooltip={me.name}
+              className="pointer-events-none"
+            >
+              <Avatar className="h-8 w-8 shrink-0">
                 <AvatarFallback className="text-xs">
                   {initials(me.name)}
                 </AvatarFallback>
               </Avatar>
-              <div className="grid flex-1 text-left text-sm leading-tight">
+              <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
                 <span className="truncate font-medium">{me.name}</span>
                 <span className="truncate text-xs text-muted-foreground">
                   {me.email}
                 </span>
               </div>
-            </div>
+            </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton
               tooltip="Sair"
               onClick={() => void handleLogout()}
             >
-              <LogOut className="size-4" />
+              <LogOut className="size-4 shrink-0" />
               <span>Sair</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
