@@ -15,6 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+## [0.3.0] - 2026-08-04
+
+### Added
+
+- Sessão multi-empresa: `sessions.active_empresa_id`, auto-seleção no login (1 membership), `POST /api/auth/active-empresa`
+- APIs de membros da casa: `GET/POST /api/empresa/membros` com `requireActiveEmpresa` / `requireEmpresaAdmin`
+- Convite de e-mail existente sem alterar senha; resposta `created` distingue alta vs convite
+- Adapter D1 com `all()` para leituras multi-linha
+
+### Changed
+
+- `GET /api/auth/me` e login passam a expor memberships e empresa ativa
+- Clear TOCTOU-safe de empresa ativa stale (`clearActiveEmpresaIf`)
+
 ## [0.2.0] - 2026-08-04
 
 ### Added
