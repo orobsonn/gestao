@@ -20,6 +20,11 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 - [atomic-live-parent-insert](#atomic-live-parent-insert) — child create via INSERT…SELECT live same-tenant parent; never check-then-act; 0 changes → 404
 - [atomic-parent-soft-delete](#atomic-parent-soft-delete) — parent soft-delete UPDATE…AND NOT EXISTS live children; map 0 changes to 404/204/409
 - [soft-delete-no-existence-oracle](#soft-delete-no-existence-oracle) — own tombstone DELETE 204; other-tenant and never-existed share identical 404 body
+- [dual-axis-papel-vs-role](#dual-axis-papel-vs-role) — shell Admin nav/route = active membership papel only; platform UI = users.role super_admin only; never cross-wire
+- [after-auth-mutation-get-me](#after-auth-mutation-get-me) — after login or setActiveEmpresa success always GET /api/auth/me; never treat mutation JSON as full me
+- [set-active-empresa-optimistic-gen](#set-active-empresa-optimistic-gen) — optimistic active_empresa_id + request generation; keep on 5xx; clear me on 401; lock picker clicks
+- [platform-spa-outside-shell](#platform-spa-outside-shell) — /platform outside shell RequireAuth and empresa picker; page self-gates super_admin
+- [shadcn-cn-not-utils](#shadcn-cn-not-utils) — shadcn cn helper at lib/cn.ts; components.json utils alias @/lib/cn; never lib/utils.ts
 
 ---
 
@@ -132,3 +137,43 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 **Why:** Returning 200 for “already deleted” on random UUIDs while 404 on other-tenant ids leaks whether a foreign id exists.
 
 **How to apply:** DELETE succeeds (204) only when a row exists for `(id, active_empresa_id)` including tombstones. Never-existed and other-tenant share identical 404 body. GET/PATCH of tombstones stay 404.
+
+---
+
+## dual-axis-papel-vs-role
+
+**Why:** `users.role` is platform authority; `memberships[].papel` is tenant authority. Wiring Admin nav to `super_admin` or platform create to `papel=admin` breaks isolation.
+
+**How to apply:** Shell Admin item + `/admin` guard use only `resolveActivePapel` / `canAccessAdmin(activePapel)`. Platform create uses `canShowPlatformCreate(users.role)`. Never pass `me.role` into `buildSidebarNavItems`.
+
+---
+
+## after-auth-mutation-get-me
+
+**Why:** Login and active-empresa responses are partial; treating them as full `me` drops `name`/`role` and breaks dual-axis UI.
+
+**How to apply:** After successful login or setActiveEmpresa, always `GET /api/auth/me` before exposing session to UI. Login body is never full me.
+
+---
+
+## set-active-empresa-optimistic-gen
+
+**Why:** POST can succeed while GET /me fails or races with a second switch, leaving UI on tenant A and server on B.
+
+**How to apply:** Optimistic `active_empresa_id` after POST ok; monotonic request gen so stale getMe cannot overwrite; on 401 clear me; on 5xx keep optimistic; lock picker while in flight.
+
+---
+
+## platform-spa-outside-shell
+
+**Why:** Super_admin often has zero memberships; wrapping `/platform` in shell RequireAuth or empresa picker blocks house provisioning.
+
+**How to apply:** Register `/platform` outside RequireAuth and outside EmpresaPicker. Page self-gates via `canShowPlatformCreate`. Unauth `/platform` is not forced to `/login` by shell redirect helpers.
+
+---
+
+## shadcn-cn-not-utils
+
+**Why:** AGENTS forbids generic `utils.ts`; shadcn CLI defaults to `@/lib/utils`.
+
+**How to apply:** Export `cn` from `src/react-app/lib/cn.ts`. Set `components.json` aliases.utils to `@/lib/cn`. Never create `lib/utils.ts`.
