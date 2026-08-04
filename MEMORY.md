@@ -14,6 +14,9 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 - [platform-guard-users-role](#platform-guard-users-role) — platform routes gate on users.role===super_admin only; empresa membership papel never elevates
 - [multi-row-write-db-batch](#multi-row-write-db-batch) — multi-table provision (empresa+user+membro) must use a single db.batch, not sequential run
 - [bootstrap-super-admin-fail-closed](#bootstrap-super-admin-fail-closed) — SUPER_ADMIN_* are secrets; existing SA never password-overwrite; email collision with role=user never promotes
+- [session-active-empresa-pointer](#session-active-empresa-pointer) — sessions.active_empresa_id is a user-scoped nullable pointer (single-column FK), not a tenant-owned child; do not composite-FK it
+- [login-auto-select-one-membership](#login-auto-select-one-membership) — login sets active_empresa only when exactly one non-deleted membership; 0 or N>1 leaves null until POST active-empresa
+- [toctou-clear-active-empresa](#toctou-clear-active-empresa) — invalidate stale active_empresa with conditional UPDATE … AND active_empresa_id = expected, never blind NULL
 
 ---
 
@@ -78,3 +81,27 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 **Why:** Bootstrap is the only path to the platform god account. Overwriting password, promoting a tenant user, or putting secrets in wrangler `vars` breaks lockout/isolation.
 
 **How to apply:** `SUPER_ADMIN_EMAIL`/`SUPER_ADMIN_PASSWORD` via `.dev.vars` / `wrangler secret put` only. Skip if SA exists (no password reset). Pre-check email before PBKDF2; `role=user` collision → `{ok:false}` no promote. Run bootstrap only on `/api/*`, not ASSETS.
+
+---
+
+## session-active-empresa-pointer
+
+**Why:** `sessions` is user-scoped auth state, not a row owned by a tenant. Applying the composite-tenant FK pattern here is wrong — the session points *at* an empresa optionally. Soft-delete/membership loss is enforced in app middleware.
+
+**How to apply:** Keep `sessions.active_empresa_id TEXT REFERENCES empresas(id)` nullable single-column. Declare `sessions` **after** `empresas` in `0001_init.sql`. Tenant handlers still re-check membership + `deleted_at IS NULL` via `requireActiveEmpresa`. See `src/worker/auth/session.ts`.
+
+---
+
+## login-auto-select-one-membership
+
+**Why:** Multi-empresa must not silently bind to an arbitrary house. Auto-pick when N>1 scopes the wrong tenant; null when N=1 forces a useless round-trip.
+
+**How to apply:** After login memberships (non-deleted only): length === 1 → set active; 0 or >1 → null + return memberships for `POST /api/auth/active-empresa`. Never accept client empresa id on login body. See LD-9.
+
+---
+
+## toctou-clear-active-empresa
+
+**Why:** Between “read stale active” and “clear it”, another request can switch to a valid house. Blind `SET NULL` wipes the concurrent switch.
+
+**How to apply:** Always `clearActiveEmpresaIf(db, rawToken, expectedEmpresaId)` — conditional UPDATE on token_hash + active_empresa_id = expected. Use on `/me` stale path and `requireActiveEmpresa` failure paths.
