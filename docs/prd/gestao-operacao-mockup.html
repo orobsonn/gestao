@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mockup — Shell + Home · light | dark</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #64748b;
+      color: #0f172a;
+      line-height: 1.4;
+    }
+    .banner {
+      padding: 12px 16px;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-size: 13px;
+    }
+    .banner strong { color: #5eead4; }
+    .pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      padding: 12px;
+      min-height: calc(100vh - 48px);
+    }
+    @media (max-width: 1100px) {
+      .pair { grid-template-columns: 1fr; }
+    }
+
+    /* —— theme tokens —— */
+    .theme {
+      --radius: 10px;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid #334155;
+      display: grid;
+      grid-template-columns: 200px 1fr;
+      min-height: 640px;
+      font-size: 13px;
+    }
+    .theme.light {
+      --bg: #f1f5f9;
+      --surface: #ffffff;
+      --ink: #0f172a;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --accent: #0f766e;
+      --accent-soft: #ccfbf1;
+      --sidebar: #0f172a;
+      --sidebar-text: #94a3b8;
+      --sidebar-on: #ccfbf1;
+      --sidebar-on-bg: #134e4a;
+      --late: #dc2626;
+      --late-bg: #fef2f2;
+      --ok: #059669;
+      --warn: #d97706;
+      --blue: #2563eb;
+      --blue-bg: #eff6ff;
+      --kpi-surface: #ffffff;
+    }
+    .theme.dark {
+      --bg: #0b1220;
+      --surface: #111827;
+      --ink: #e5e7eb;
+      --muted: #94a3b8;
+      --line: #1f2937;
+      --accent: #2dd4bf;
+      --accent-soft: #134e4a;
+      --sidebar: #030712;
+      --sidebar-text: #94a3b8;
+      --sidebar-on: #ccfbf1;
+      --sidebar-on-bg: #134e4a;
+      --late: #f87171;
+      --late-bg: #450a0a;
+      --ok: #34d399;
+      --warn: #fbbf24;
+      --blue: #60a5fa;
+      --blue-bg: #1e3a5f;
+      --kpi-surface: #111827;
+    }
+
+    .theme aside {
+      background: var(--sidebar);
+      color: var(--sidebar-text);
+      padding: 14px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .theme aside .brand {
+      color: #fff;
+      font-weight: 700;
+      padding: 6px 10px 12px;
+      font-size: 14px;
+    }
+    .theme aside .co {
+      margin: 0 6px 12px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: #1e293b;
+      color: #fff;
+      font-size: 11px;
+    }
+    .theme aside .co small { display: block; color: #94a3b8; margin-top: 2px; }
+    .theme aside a {
+      display: block;
+      padding: 8px 10px;
+      border-radius: 8px;
+      color: var(--sidebar-text);
+      text-decoration: none;
+      font-size: 12px;
+    }
+    .theme aside a.on {
+      background: var(--sidebar-on-bg);
+      color: var(--sidebar-on);
+      font-weight: 600;
+    }
+    .theme aside .foot {
+      margin-top: auto;
+      padding: 10px;
+      font-size: 11px;
+      border-top: 1px solid #1e293b;
+      color: #64748b;
+    }
+
+    .theme .main {
+      background: var(--bg);
+      color: var(--ink);
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .theme .topbar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+      padding: 8px 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .theme .topbar strong { color: var(--ink); }
+    .theme .spacer { flex: 1; }
+    .theme .toggle {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      overflow: hidden;
+      font-size: 11px;
+      background: var(--surface);
+    }
+    .theme .toggle span { padding: 4px 10px; color: var(--muted); }
+    .theme .toggle span.on {
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }
+    .theme.dark .toggle span.on { color: #042f2e; }
+    .theme .theme-pill {
+      font-size: 10px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+    }
+    .theme .page { padding: 14px; }
+    .theme h1 { font-size: 18px; margin: 0 0 2px; }
+    .theme .lead { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .kpi {
+      background: var(--kpi-surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px;
+    }
+    .kpi .l {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+    .kpi .v {
+      font-size: 22px;
+      font-weight: 700;
+      margin-top: 2px;
+    }
+    .kpi.warn .v { color: var(--late); }
+    .kpi.ok .v { color: var(--ok); }
+    .kpi.accent .v { color: var(--accent); }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 8px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px;
+    }
+    .card h2 {
+      margin: 0 0 8px;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+    .bar-row {
+      display: grid;
+      grid-template-columns: 72px 1fr 20px;
+      gap: 6px;
+      align-items: center;
+      font-size: 11px;
+      margin-bottom: 6px;
+    }
+    .track {
+      height: 8px;
+      background: var(--line);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .fill { height: 100%; border-radius: 999px; }
+    .donut {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: conic-gradient(
+        var(--late) 0 25%,
+        var(--warn) 25% 45%,
+        var(--blue) 45% 70%,
+        var(--accent) 70% 100%
+      );
+      position: relative;
+      flex-shrink: 0;
+    }
+    .donut::after {
+      content: "";
+      position: absolute;
+      inset: 16px;
+      background: var(--surface);
+      border-radius: 50%;
+    }
+    .split { display: flex; gap: 10px; align-items: center; }
+    .legend { font-size: 11px; color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    th, td {
+      text-align: left;
+      padding: 6px 4px;
+      border-bottom: 1px solid var(--line);
+    }
+    th {
+      font-size: 9px;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+    .tag {
+      display: inline-block;
+      font-size: 9px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      background: var(--line);
+      color: var(--muted);
+    }
+    .tag.late { background: var(--late-bg); color: var(--late); font-weight: 600; }
+    .tag.doing { background: var(--blue-bg); color: var(--blue); }
+    .label-mode {
+      text-align: center;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 6px;
+      background: #1e293b;
+      color: #94a3b8;
+    }
+    .label-mode.light-l { color: #fde68a; }
+    .label-mode.dark-l { color: #5eead4; }
+    .gap { margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="banner">
+    Referência canônica UI · <strong>shell + Home admin</strong> ·
+    <strong>light | dark</strong> lado a lado · shadcn na implementação ·
+    PRD: <strong>docs/prd/gestao-operacao.md</strong> § Contrato de UI
+  </div>
+
+  <div class="pair">
+    <!-- LIGHT -->
+    <div>
+      <div class="label-mode light-l">Light</div>
+      <div class="theme light">
+        <aside>
+          <div class="brand">Gestão</div>
+          <div class="co">Casa Alpha<small>trocar empresa ▾</small></div>
+          <a class="on" href="#">Home</a>
+          <a href="#">Experts</a>
+          <a href="#">Meu trabalho</a>
+          <a href="#">Admin</a>
+          <div class="foot">Admin · Pessoa · ☀/☾</div>
+        </aside>
+        <div class="main">
+          <div class="topbar">
+            <strong>Home</strong> · visão do dia
+            <div class="spacer"></div>
+            <span class="theme-pill">☀ Light</span>
+            <div class="toggle">
+              <span class="on">Tudo</span>
+              <span>Só meu</span>
+              <span>Só empresa</span>
+            </div>
+          </div>
+          <div class="page">
+            <h1>Visão do dia</h1>
+            <p class="lead">Dashboard admin · KPIs + listas clicáveis</p>
+            <div class="kpis">
+              <div class="kpi warn"><div class="l">Atrasadas</div><div class="v">7</div></div>
+              <div class="kpi"><div class="l">Hoje</div><div class="v">4</div></div>
+              <div class="kpi accent"><div class="l">Minhas</div><div class="v">5</div></div>
+              <div class="kpi ok"><div class="l">Feitas 7d</div><div class="v">18</div></div>
+            </div>
+            <div class="grid2">
+              <div class="card">
+                <h2>Carga por urgência</h2>
+                <div class="bar-row"><span>Atrasadas</span><div class="track"><div class="fill" style="width:70%;background:var(--late)"></div></div><span>7</span></div>
+                <div class="bar-row"><span>Hoje</span><div class="track"><div class="fill" style="width:45%;background:var(--warn)"></div></div><span>4</span></div>
+                <div class="bar-row"><span>Semana</span><div class="track"><div class="fill" style="width:90%;background:var(--blue)"></div></div><span>12</span></div>
+              </div>
+              <div class="card">
+                <h2>Status</h2>
+                <div class="split">
+                  <div class="donut"></div>
+                  <div class="legend">Atrasada · Fazendo · A fazer · Feito</div>
+                </div>
+              </div>
+            </div>
+            <div class="grid2 gap">
+              <div class="card">
+                <h2>Meu trabalho</h2>
+                <table>
+                  <thead><tr><th>Tarefa</th><th>Prazo</th><th>Status</th></tr></thead>
+                  <tbody>
+                    <tr><td>Revisar copy</td><td><span class="tag late">atrasada</span></td><td><span class="tag doing">fazendo</span></td></tr>
+                    <tr><td>Gravar aula</td><td>sex</td><td><span class="tag">a fazer</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="card">
+                <h2>Empresa · olho</h2>
+                <table>
+                  <thead><tr><th>Tarefa</th><th>Dono</th><th>Prazo</th></tr></thead>
+                  <tbody>
+                    <tr><td>Criativos</td><td>Pessoa B</td><td><span class="tag late">atrasada</span></td></tr>
+                    <tr><td>Checkout</td><td>Pessoa C</td><td>hoje</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DARK -->
+    <div>
+      <div class="label-mode dark-l">Dark</div>
+      <div class="theme dark">
+        <aside>
+          <div class="brand">Gestão</div>
+          <div class="co">Casa Alpha<small>trocar empresa ▾</small></div>
+          <a class="on" href="#">Home</a>
+          <a href="#">Experts</a>
+          <a href="#">Meu trabalho</a>
+          <a href="#">Admin</a>
+          <div class="foot">Admin · Pessoa · ☀/☾</div>
+        </aside>
+        <div class="main">
+          <div class="topbar">
+            <strong>Home</strong> · visão do dia
+            <div class="spacer"></div>
+            <span class="theme-pill">☾ Dark</span>
+            <div class="toggle">
+              <span class="on">Tudo</span>
+              <span>Só meu</span>
+              <span>Só empresa</span>
+            </div>
+          </div>
+          <div class="page">
+            <h1>Visão do dia</h1>
+            <p class="lead">Mesma hierarquia · tokens dark</p>
+            <div class="kpis">
+              <div class="kpi warn"><div class="l">Atrasadas</div><div class="v">7</div></div>
+              <div class="kpi"><div class="l">Hoje</div><div class="v">4</div></div>
+              <div class="kpi accent"><div class="l">Minhas</div><div class="v">5</div></div>
+              <div class="kpi ok"><div class="l">Feitas 7d</div><div class="v">18</div></div>
+            </div>
+            <div class="grid2">
+              <div class="card">
+                <h2>Carga por urgência</h2>
+                <div class="bar-row"><span>Atrasadas</span><div class="track"><div class="fill" style="width:70%;background:var(--late)"></div></div><span>7</span></div>
+                <div class="bar-row"><span>Hoje</span><div class="track"><div class="fill" style="width:45%;background:var(--warn)"></div></div><span>4</span></div>
+                <div class="bar-row"><span>Semana</span><div class="track"><div class="fill" style="width:90%;background:var(--blue)"></div></div><span>12</span></div>
+              </div>
+              <div class="card">
+                <h2>Status</h2>
+                <div class="split">
+                  <div class="donut"></div>
+                  <div class="legend">Atrasada · Fazendo · A fazer · Feito</div>
+                </div>
+              </div>
+            </div>
+            <div class="grid2 gap">
+              <div class="card">
+                <h2>Meu trabalho</h2>
+                <table>
+                  <thead><tr><th>Tarefa</th><th>Prazo</th><th>Status</th></tr></thead>
+                  <tbody>
+                    <tr><td>Revisar copy</td><td><span class="tag late">atrasada</span></td><td><span class="tag doing">fazendo</span></td></tr>
+                    <tr><td>Gravar aula</td><td>sex</td><td><span class="tag">a fazer</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="card">
+                <h2>Empresa · olho</h2>
+                <table>
+                  <thead><tr><th>Tarefa</th><th>Dono</th><th>Prazo</th></tr></thead>
+                  <tbody>
+                    <tr><td>Criativos</td><td>Pessoa B</td><td><span class="tag late">atrasada</span></td></tr>
+                    <tr><td>Checkout</td><td>Pessoa C</td><td>hoje</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
