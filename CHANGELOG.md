@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+## [0.5.0] - 2026-08-04
+
+### Added
+
+- Casco web com shadcn/ui + Tailwind (kit fechado do PRD) e tema light/dark/system
+- Login, seletor de empresa ativa e navegação (Home, Experts, Meu trabalho, Admin)
+- Admin na sidebar só para papel admin da casa ativa; `/platform` fora do casco
+- Suíte hermética `tests/web-shell-*.test.mjs` (nav, sessão, kit, rotas)
+
 ## [0.4.0] - 2026-08-04
 
 ### Added
