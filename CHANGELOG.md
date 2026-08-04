@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Super-admin da plataforma: bootstrap por secrets, login/sessão, provisionar Empresa + primeiro admin
+- API `POST /api/platform/empresas` (só `users.role=super_admin`) e UI mínima `/platform`
+- Primitivas de auth (PBKDF2, sessão cookie HttpOnly, logout server-side)
+
 ### Changed
 
 ### Fixed
