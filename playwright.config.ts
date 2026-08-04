@@ -6,6 +6,7 @@ const PORT = Number(process.env.E2E_PORT ?? 5173);
 // Prefer localhost (not 127.0.0.1): Secure session cookies are accepted on
 // http://localhost but often dropped on http://127.0.0.1 in Chromium.
 const BASE_URL = process.env.E2E_BASE_URL ?? `http://localhost:${PORT}`;
+const isRemoteTarget = /^https?:\/\/(?!localhost|127\.0\.0\.1)/i.test(BASE_URL);
 
 export default defineConfig({
   testDir: "tests/e2e",
@@ -23,14 +24,19 @@ export default defineConfig({
     screenshot: "only-on-failure",
     video: "retain-on-failure",
   },
-  webServer: {
-    command: "npm run dev -- --host localhost --port " + PORT,
-    url: BASE_URL,
-    reuseExistingServer: !process.env.CI,
-    timeout: 180_000,
-    stdout: "pipe",
-    stderr: "pipe",
-  },
+  // Local only — remote/prod already has a live Worker URL
+  ...(isRemoteTarget
+    ? {}
+    : {
+        webServer: {
+          command: "npm run dev -- --host localhost --port " + PORT,
+          url: BASE_URL,
+          reuseExistingServer: !process.env.CI,
+          timeout: 180_000,
+          stdout: "pipe" as const,
+          stderr: "pipe" as const,
+        },
+      }),
   projects: [
     {
       name: "chromium",

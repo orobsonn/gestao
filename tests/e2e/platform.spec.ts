@@ -8,18 +8,20 @@ import { superAdminCredentials } from "./helpers/dev-vars";
 const E2E_PASSWORD = "password-e2e-ok";
 
 test.describe("Plataforma /platform", () => {
-  test("super_admin vê formulário e cria empresa", async ({ page }) => {
+  test("super_admin vê formulário e cria empresa", async ({ page, context }) => {
     const { email, password } = superAdminCredentials();
     const login = new LoginPage(page);
     const platform = new PlatformPage(page);
 
+    await context.clearCookies();
     await login.goto();
+    await expect(login.emailInput).toBeVisible();
     await login.login(email, password);
     // SA often has zero memberships → shell without active empresa is OK
     await expect(page).not.toHaveURL(/\/login/);
 
     await platform.goto();
-    await expect(platform.heading).toBeVisible();
+    await expect(platform.heading).toBeVisible({ timeout: 20_000 });
 
     const stamp = Date.now();
     const adminEmail = `e2e-new-admin-${stamp}@example.com`;
@@ -32,19 +34,10 @@ test.describe("Plataforma /platform", () => {
 
     await expect(platform.message).toContainText(/empresa criada/i);
 
-    // New admin can log in to the shell
-    await page.goto("/login");
-    // may already be authed as SA — logout via shell if needed
-    const sair = page.getByRole("button", { name: /^sair$/i });
-    if (await sair.isVisible().catch(() => false)) {
-      await sair.click();
-      await expect(page).toHaveURL(/\/login/);
-    } else {
-      // clear cookies if still on shell without Sair visible
-      await page.context().clearCookies();
-      await page.goto("/login");
-    }
-
+    // Fresh session for the new house admin
+    await context.clearCookies();
+    await login.goto();
+    await expect(login.emailInput).toBeVisible();
     await login.login(adminEmail, E2E_PASSWORD);
     await expect(page).toHaveURL("/");
     await expect(page.getByRole("heading", { name: /^home$/i })).toBeVisible();
