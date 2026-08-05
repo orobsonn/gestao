@@ -20,7 +20,7 @@ import {
 import { useAuth } from "@/providers/auth-provider";
 
 /**
- * @description Account surface: Telegram card with vinculado|pendente badge, Vincular + Atualizar.
+ * @description Account page: Telegram card with vinculado|pendente badge, Vincular + Atualizar.
  */
 export function MinhaContaPage() {
   const { me, refreshMe } = useAuth();

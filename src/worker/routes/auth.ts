@@ -289,10 +289,10 @@ export function createAuthApp(
     )
   })
 
-  /**
-   * @description Mint a one-time Telegram deep-link code for the session user.
-   * Stores SHA-256(code) only; returns deep_link + expires_at (never raw hash/token).
-   */
+   /**
+    * @description Mint a single-use Telegram deep-link code for the session user.
+    * Stores SHA-256(code) only; returns deep_link + expires_at (never raw hash/token).
+    */
   app.post('/api/auth/telegram-link', requireSession(db), async (c) => {
     const username = (authDeps?.botUsername ?? '').trim()
     if (!username) {

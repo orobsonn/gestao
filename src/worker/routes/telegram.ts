@@ -1,4 +1,4 @@
-/** @description Telegram webhook routes — atomic one-time code claim + user↔telegram link (hermetic via createTelegramApp). */
+/** @description Telegram webhook routes — atomic one-time code claim + user↔telegram link (hermetic through createTelegramApp). */
 
 import { Hono } from 'hono'
 import { ensureBatchDb } from '../services/create-empresa.ts'
