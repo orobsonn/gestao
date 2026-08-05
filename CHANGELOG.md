@@ -9,15 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Vínculo Telegram DM: deep link em Minha conta + webhook `/start` com código de uso único
-- Migration user-scoped `telegram_link_codes` / `user_telegram_links` e secrets `TELEGRAM_*`
-- API mint `POST /api/auth/telegram-link` e `me.telegram.linked`
-
 ### Changed
 
 ### Fixed
 
 ### Removed
+
+## [0.9.0] - 2026-08-05
+
+### Added
+
+- Vínculo Telegram DM: deep link em Minha conta + webhook `/start` com código de uso único
+- Migration user-scoped `telegram_link_codes` / `user_telegram_links` e secrets `TELEGRAM_*`
+- API mint `POST /api/auth/telegram-link` e `me.telegram.linked`
 
 ## [0.8.0] - 2026-08-04
 
