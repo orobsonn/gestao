@@ -30,6 +30,12 @@ export const LLM_SETTINGS_API_PATH = "/api/empresa/llm-settings";
 export const LLM_VALIDATE_API_PATH = "/api/empresa/llm-settings/validate";
 export const LLM_HEALTH_API_PATH = "/api/empresa/llm-settings/health";
 
+export const TELEGRAM_BINDINGS_API_PATH = "/api/empresa/telegram-bindings";
+export const TELEGRAM_EMPRESA_COMMAND_API_PATH =
+  "/api/empresa/telegram-bindings/empresa-command";
+export const TELEGRAM_EXPERT_COMMAND_API_PATH =
+  "/api/empresa/telegram-bindings/expert-command";
+
 /**
  * @description GET path for campanhas under an expert.
  */
@@ -525,4 +531,58 @@ export async function fetchLlmHealth(): Promise<LlmHealthResponse> {
   const res = await authFetch(LLM_HEALTH_API_PATH, { method: "GET" });
   await assertOk(res, "fetchLlmHealth");
   return (await res.json()) as LlmHealthResponse;
+}
+
+// ── Telegram bindings (admin) ────────────────────────────────────────────────
+
+/** @description Status DTO from GET telegram-bindings — booleans + timestamps only, never chat/thread ids or raw codes. */
+export type TelegramBindingsStatus = {
+  empresa: { linked: boolean; linked_at?: string };
+  experts: Array<{
+    expert_id: string;
+    nome: string;
+    linked: boolean;
+    linked_at?: string;
+  }>;
+};
+
+/** @description Mint response from POST empresa-command / expert-command. */
+export type TelegramMintResponse = {
+  command: string;
+  expires_at: string;
+};
+
+/**
+ * @description GET /api/empresa/telegram-bindings — status for active empresa (via session cookie).
+ */
+export async function fetchBindings(): Promise<TelegramBindingsStatus> {
+  const res = await authFetch(TELEGRAM_BINDINGS_API_PATH, { method: "GET" });
+  await assertOk(res, "fetchBindings");
+  return (await res.json()) as TelegramBindingsStatus;
+}
+
+/**
+ * @description POST /api/empresa/telegram-bindings/empresa-command — mint empresa bind code.
+ */
+export async function mintEmpresaCommand(): Promise<TelegramMintResponse> {
+  const res = await authFetch(
+    TELEGRAM_EMPRESA_COMMAND_API_PATH,
+    { method: "POST" },
+  );
+  await assertOk(res, "mintEmpresaCommand");
+  return (await res.json()) as TelegramMintResponse;
+}
+
+/**
+ * @description POST /api/empresa/telegram-bindings/expert-command — mint expert bind code for live same-tenant expert.
+ */
+export async function mintExpertCommand(
+  expert_id: string,
+): Promise<TelegramMintResponse> {
+  const res = await authFetch(
+    TELEGRAM_EXPERT_COMMAND_API_PATH,
+    jsonInit("POST", { expert_id }),
+  );
+  await assertOk(res, "mintExpertCommand");
+  return (await res.json()) as TelegramMintResponse;
 }

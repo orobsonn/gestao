@@ -1,6 +1,7 @@
 /**
- * Locked AdminPage UI contracts — Pessoas|IA tabs only, create-membro body,
- * LLM status/health copy maps, /admin route wiring, LLM API path constants.
+ * Locked AdminPage UI contracts — Pessoas|IA|Telegram tabs, create-membro body,
+ * LLM status/health copy maps, /admin route wiring, LLM + Telegram API path constants,
+ * Telegram mint command display contract.
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -10,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import {
   ADMIN_TAB_IDS,
   buildCreateMembroBody,
+  displayTelegramMintCommand,
   mapLlmHealthReasonCopy,
   mapLlmStatusBadge,
 } from "../src/react-app/lib/admin-ui.ts";
@@ -17,23 +19,21 @@ import {
   LLM_HEALTH_API_PATH,
   LLM_SETTINGS_API_PATH,
   LLM_VALIDATE_API_PATH,
+  TELEGRAM_BINDINGS_API_PATH,
+  TELEGRAM_EMPRESA_COMMAND_API_PATH,
+  TELEGRAM_EXPERT_COMMAND_API_PATH,
 } from "../src/react-app/lib/domain-api.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const APP_TSX = resolve(__dirname, "../src/react-app/App.tsx");
 
 /**
- * @description ADMIN_TAB_IDS is exactly ['pessoas','ia'] and does not include telegram.
+ * @description ADMIN_TAB_IDS is exactly ['pessoas','ia','telegram'] with length 3.
  */
-test("lt-admin-tabs-pessoas-ia-only", () => {
+test("lt-admin-tabs-pessoas-ia-telegram", () => {
   assert.ok(Array.isArray(ADMIN_TAB_IDS), "ADMIN_TAB_IDS must be an array");
-  assert.deepEqual([...ADMIN_TAB_IDS], ["pessoas", "ia"]);
-  assert.equal(
-    ADMIN_TAB_IDS.includes("telegram"),
-    false,
-    "ADMIN_TAB_IDS must not include telegram",
-  );
-  assert.equal(ADMIN_TAB_IDS.length, 2);
+  assert.deepEqual([...ADMIN_TAB_IDS], ["pessoas", "ia", "telegram"]);
+  assert.equal(ADMIN_TAB_IDS.length, 3);
 });
 
 /**
@@ -224,4 +224,47 @@ test("lt-admin-llm-api-paths", () => {
     "/api/empresa/llm-settings/validate",
   );
   assert.equal(LLM_HEALTH_API_PATH, "/api/empresa/llm-settings/health");
+});
+
+/**
+ * @description domain-api telegram bindings path constants match GET status and both mint POST routes.
+ */
+test("lt-admin-telegram-api-paths", () => {
+  assert.equal(
+    TELEGRAM_BINDINGS_API_PATH,
+    "/api/empresa/telegram-bindings",
+  );
+  assert.ok(
+    TELEGRAM_EMPRESA_COMMAND_API_PATH.endsWith(
+      "/telegram-bindings/empresa-command",
+    ),
+    "empresa mint path must end with /telegram-bindings/empresa-command",
+  );
+  assert.ok(
+    TELEGRAM_EXPERT_COMMAND_API_PATH.endsWith(
+      "/telegram-bindings/expert-command",
+    ),
+    "expert mint path must end with /telegram-bindings/expert-command",
+  );
+});
+
+/**
+ * @description displayTelegramMintCommand preserves full mint command including '/vincular_empresa ' prefix and 64-hex code (no stripping).
+ */
+test("lt-admin-telegram-command-display-contract", () => {
+  const hex64 = "a".repeat(64);
+  const command = `/vincular_empresa ${hex64}`;
+
+  const displayed = displayTelegramMintCommand(command);
+
+  assert.equal(typeof displayed, "string");
+  assert.ok(
+    displayed.startsWith("/vincular_empresa "),
+    "display must preserve prefix '/vincular_empresa '",
+  );
+  assert.equal(
+    displayed,
+    command,
+    "display must equal full API command (no code stripping)",
+  );
 });

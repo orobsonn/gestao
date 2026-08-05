@@ -49,11 +49,13 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  ADMIN_TAB_IDS,
   buildCreateMembroBody,
   mapLlmHealthReasonCopy,
   mapLlmStatusBadge,
   type AdminTabId,
 } from "@/lib/admin-ui";
+import { AdminTelegramPanel } from "@/components/admin-telegram-panel";
 import {
   createMembro,
   fetchLlmHealth,
@@ -337,12 +339,15 @@ export function AdminPage() {
       <Tabs
         value={tab}
         onValueChange={(v) => {
-          if (v === "pessoas" || v === "ia") setTab(v);
+          if ((ADMIN_TAB_IDS as readonly string[]).includes(v)) {
+            setTab(v as AdminTabId);
+          }
         }}
       >
         <TabsList>
           <TabsTrigger value="pessoas">Pessoas</TabsTrigger>
           <TabsTrigger value="ia">IA</TabsTrigger>
+          <TabsTrigger value="telegram">Telegram</TabsTrigger>
         </TabsList>
 
         <TabsContent value="pessoas" className="mt-4 flex flex-col gap-4">
@@ -657,6 +662,10 @@ export function AdminPage() {
               ) : null}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="telegram" className="mt-4 flex flex-col gap-4">
+          <AdminTelegramPanel activeEmpresaId={activeEmpresaId} />
         </TabsContent>
       </Tabs>
     </div>
