@@ -1,4 +1,4 @@
-/** @description Minha conta page — Telegram link status, mint deep-link, refresh on focus while pending. */
+/** @description Minha conta page — Telegram link status, mint deep-link, unlink, refresh on focus while pending. */
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -12,23 +12,29 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { mintTelegramLink } from "@/lib/auth-api";
+import { mintTelegramLink, unlinkTelegram } from "@/lib/auth-api";
 import {
+  DESVINCULAR_BUTTON_LABEL,
   mapTelegramLinkBadge,
+  resolveTelegramAccountActions,
+  resolveUnlinkFeedback,
   shouldRefetchTelegramStatusOnFocus,
+  UNLINK_REQUIRES_CONFIRMATION,
 } from "@/lib/minha-conta-ui";
 import { useAuth } from "@/providers/auth-provider";
 
 /**
- * @description Account page: Telegram card with vinculado|pendente badge, Vincular + Atualizar.
+ * @description Account page: Telegram card with vinculado|pendente badge; Desvincular when linked, Vincular + Atualizar when pending.
  */
 export function MinhaContaPage() {
   const { me, refreshMe } = useAuth();
   const [minting, setMinting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [unlinking, setUnlinking] = useState(false);
 
   const linked = me?.telegram?.linked === true;
   const badgeLabel = mapTelegramLinkBadge(linked);
+  const actions = resolveTelegramAccountActions(linked);
 
   useEffect(() => {
     if (!shouldRefetchTelegramStatusOnFocus(linked)) {
@@ -71,6 +77,32 @@ export function MinhaContaPage() {
     }
   }
 
+  async function handleDesvincular() {
+    if (UNLINK_REQUIRES_CONFIRMATION) return;
+
+    setUnlinking(true);
+    try {
+      await unlinkTelegram();
+      const next = await refreshMe();
+      if (
+        resolveUnlinkFeedback({ unlinkSucceeded: true, nextMe: next }) ===
+        "error"
+      ) {
+        toast.error(
+          "Não foi possível confirmar o desvínculo. Tente de novo.",
+        );
+        return;
+      }
+      toast.success("Telegram desvinculado.");
+    } catch {
+      toast.error(
+        "Não foi possível desvincular o Telegram. Tente de novo.",
+      );
+    } finally {
+      setUnlinking(false);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -101,21 +133,35 @@ export function MinhaContaPage() {
             </Alert>
           ) : null}
           <div className="flex flex-wrap gap-2">
-            <Button
-              type="button"
-              disabled={minting}
-              onClick={() => void handleVincular()}
-            >
-              Vincular Telegram
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={refreshing}
-              onClick={() => void handleAtualizar()}
-            >
-              Atualizar status
-            </Button>
+            {actions.includes("desvincular") ? (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={unlinking}
+                onClick={() => void handleDesvincular()}
+              >
+                {DESVINCULAR_BUTTON_LABEL}
+              </Button>
+            ) : null}
+            {actions.includes("vincular") ? (
+              <Button
+                type="button"
+                disabled={minting}
+                onClick={() => void handleVincular()}
+              >
+                Vincular Telegram
+              </Button>
+            ) : null}
+            {actions.includes("atualizar") ? (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={refreshing}
+                onClick={() => void handleAtualizar()}
+              >
+                Atualizar status
+              </Button>
+            ) : null}
           </div>
         </CardContent>
       </Card>

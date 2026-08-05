@@ -1,4 +1,4 @@
-/** @description Auth HTTP routes: login, logout, me, active-empresa, telegram-link — hermetic via createAuthApp(db, authDeps?); /me clears stale active via clearActiveEmpresaIf. */
+/** @description Auth HTTP routes: login, logout, me, active-empresa, telegram-link (POST mint + DELETE unlink) — hermetic via createAuthApp(db, authDeps?); /me clears stale active via clearActiveEmpresaIf. */
 
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
@@ -152,7 +152,7 @@ function isUniqueConstraintError(err: unknown): boolean {
 }
 
 /**
- * @description Build a Hono app with POST login/logout/active-empresa/telegram-link and GET /me.
+ * @description Build a Hono app with POST login/logout/active-empresa/telegram-link, DELETE telegram-link, and GET /me.
  * Closes over `db` for hermetic tests (node:sqlite) and worker mounting.
  * Optional `authDeps.botUsername` enables Telegram deep-link mint (503 when unset/blank).
  */
@@ -356,6 +356,30 @@ export function createAuthApp(
       },
       200,
     )
+  })
+
+  /**
+   * @description Hard-DELETE the session user's Telegram link row (idempotent 204 empty body).
+   * Also burns unused telegram_link_codes (defense-in-depth). Session user id only; never returns telegram_user_id.
+   */
+  app.delete('/api/auth/telegram-link', requireSession(db), async (c) => {
+    const user = c.get('user')
+    const batchDb = ensureBatchDb(db)
+    await Promise.resolve(
+      batchDb.batch([
+        batchDb
+          .prepare(`DELETE FROM user_telegram_links WHERE user_id = ?`)
+          .bind(user.id),
+        batchDb
+          .prepare(
+            `UPDATE telegram_link_codes
+             SET used_at = datetime('now')
+             WHERE user_id = ? AND used_at IS NULL`,
+          )
+          .bind(user.id),
+      ]),
+    )
+    return c.body(null, 204)
   })
 
   return app
