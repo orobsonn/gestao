@@ -1,7 +1,7 @@
 ---
 description: Surgical fix for HIGH-severity defects (race condition, security, data corruption, auth-bypass). OpenAI Terra. Minimum delta only, no new files.
 mode: all
-model: openai/gpt-5.6-terra
+model: xai/grok-4.5
 temperature: 0.1
 steps: 80
 tools:

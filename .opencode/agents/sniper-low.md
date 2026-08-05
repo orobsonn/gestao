@@ -1,7 +1,7 @@
 ---
 description: Surgical fix for LOW-severity defects (typo, naming, dead code, cosmetic). OpenAI Luna. Minimum delta only, no new files.
 mode: all
-model: openai/gpt-5.6-luna
+model: xai/grok-4.5
 temperature: 0.0
 steps: 80
 tools:

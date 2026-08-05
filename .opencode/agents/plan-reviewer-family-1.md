@@ -1,7 +1,7 @@
 ---
 description: Compatibility alias for plan-reviewer. Remove after the two-release window (0.54.0).
 mode: subagent
-model: openai/gpt-5.6-sol
+model: xai/grok-4.5
 temperature: 0.1
 permission:
   classify: deny
