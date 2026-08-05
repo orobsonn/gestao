@@ -9,6 +9,7 @@ import {
   LogOut,
   Settings2,
   Shield,
+  UserRound,
   Users,
 } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
@@ -202,32 +203,60 @@ export function AppSidebar() {
             </SidebarMenuItem>
           ) : null}
           <SidebarMenuItem>
-            <SidebarMenuButton
-              size="lg"
-              tooltip={me.name}
-              className="pointer-events-none"
-            >
-              <Avatar className="h-8 w-8 shrink-0">
-                <AvatarFallback className="text-xs">
-                  {initials(me.name)}
-                </AvatarFallback>
-              </Avatar>
-              <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
-                <span className="truncate font-medium">{me.name}</span>
-                <span className="truncate text-xs text-muted-foreground">
-                  {me.email}
-                </span>
-              </div>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip="Sair"
-              onClick={() => void handleLogout()}
-            >
-              <LogOut className="size-4 shrink-0" />
-              <span>Sair</span>
-            </SidebarMenuButton>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <SidebarMenuButton
+                  size="lg"
+                  tooltip={me.name}
+                  className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+                >
+                  <Avatar className="h-8 w-8 shrink-0">
+                    <AvatarFallback className="text-xs">
+                      {initials(me.name)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
+                    <span className="truncate font-medium">{me.name}</span>
+                    <span className="truncate text-xs text-muted-foreground">
+                      {me.email}
+                    </span>
+                  </div>
+                  <ChevronsUpDown className="ml-auto size-4 shrink-0" />
+                </SidebarMenuButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-56 rounded-lg"
+                align="end"
+                side="top"
+                sideOffset={4}
+              >
+                <DropdownMenuLabel className="p-0 font-normal">
+                  <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
+                    <Avatar className="h-8 w-8 shrink-0">
+                      <AvatarFallback className="text-xs">
+                        {initials(me.name)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
+                      <span className="truncate font-medium">{me.name}</span>
+                      <span className="truncate text-xs text-muted-foreground">
+                        {me.email}
+                      </span>
+                    </div>
+                  </div>
+                </DropdownMenuLabel>
+                <DropdownMenuItem
+                  onClick={() => navigate("/minha-conta")}
+                >
+                  <UserRound className="mr-2 size-4" />
+                  Minha conta
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => void handleLogout()}>
+                  <LogOut className="mr-2 size-4" />
+                  Sair
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

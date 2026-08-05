@@ -6,12 +6,14 @@ import { enableForeignKeysAsync } from './db.ts'
 import { createAuthApp } from './routes/auth.ts'
 import { createEmpresaApp } from './routes/empresa.ts'
 import { createPlatformApp } from './routes/platform.ts'
+import { createTelegramApp } from './routes/telegram.ts'
 import type { BatchDbLike, BatchStatement } from './services/create-empresa.ts'
 import type { DbLike, StatementLike } from './types.ts'
 
 /**
  * @description Worker bindings: D1, static assets, optional super-admin bootstrap secrets,
- * optional LLM key encryption secret (never wrangler vars — runtime secret / .dev.vars).
+ * optional LLM key encryption secret, optional single-app Telegram bot secrets
+ * (never wrangler vars — runtime secret / .dev.vars).
  */
 export type WorkerEnv = {
   DB: D1Database
@@ -19,6 +21,9 @@ export type WorkerEnv = {
   SUPER_ADMIN_EMAIL?: string
   SUPER_ADMIN_PASSWORD?: string
   LLM_KEY_ENCRYPTION_SECRET?: string
+  TELEGRAM_BOT_TOKEN?: string
+  TELEGRAM_BOT_USERNAME?: string
+  TELEGRAM_WEBHOOK_SECRET?: string
 }
 
 /**
@@ -84,11 +89,13 @@ app.use('/api/*', async (c, next) => {
 })
 
 /**
- * @description Dispatch /api/auth/* to createAuthApp closed over this request's DB.
+ * @description Dispatch /api/auth/* to createAuthApp closed over this request's DB + bot username.
  */
 app.all('/api/auth/*', (c) => {
   const db = d1AsDbLike(c.env.DB)
-  return createAuthApp(db).fetch(c.req.raw)
+  return createAuthApp(db, {
+    botUsername: c.env.TELEGRAM_BOT_USERNAME,
+  }).fetch(c.req.raw)
 })
 
 /**
@@ -107,6 +114,19 @@ app.all('/api/empresa/*', (c) => {
   const db = d1AsDbLike(c.env.DB)
   return createEmpresaApp(db, {
     llmKeyEncryptionSecret: c.env.LLM_KEY_ENCRYPTION_SECRET,
+  }).fetch(c.req.raw)
+})
+
+/**
+ * @description Dispatch /api/telegram/* to createTelegramApp (webhook secret + bot token + fetch).
+ * Mounted before ASSETS; single global bot secrets from WorkerEnv only.
+ */
+app.all('/api/telegram/*', (c) => {
+  const db = d1AsDbLike(c.env.DB)
+  return createTelegramApp(db, {
+    botToken: c.env.TELEGRAM_BOT_TOKEN,
+    webhookSecret: c.env.TELEGRAM_WEBHOOK_SECRET,
+    fetchImpl: fetch,
   }).fetch(c.req.raw)
 })
 

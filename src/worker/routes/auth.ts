@@ -1,4 +1,4 @@
-/** @description Auth HTTP routes: login, logout, me, active-empresa — hermetic via createAuthApp(db); /me clears stale active via clearActiveEmpresaIf. */
+/** @description Auth HTTP routes: login, logout, me, active-empresa, telegram-link — hermetic via createAuthApp(db, authDeps?); /me clears stale active via clearActiveEmpresaIf. */
 
 import { Hono } from 'hono'
 import { getCookie } from 'hono/cookie'
@@ -17,9 +17,12 @@ import {
   requireSession,
   type SessionVariables,
 } from '../middleware/require-session.ts'
+import { ensureBatchDb } from '../services/create-empresa.ts'
 import type { DbLike } from '../types.ts'
 
 const SESSION_COOKIE_NAME = 'gestao_session'
+const TELEGRAM_LINK_CODE_BYTES = 32
+const TELEGRAM_LINK_TTL_SQL = "datetime('now', '+15 minutes')"
 
 /** @description Generic login failure body — same for wrong password and unknown email. */
 const LOGIN_FAILURE_BODY = { error: 'Invalid credentials' } as const
@@ -40,11 +43,32 @@ const activeEmpresaBodySchema = z.object({
   empresa_id: z.string().min(1),
 })
 
+/** @description Optional deps for createAuthApp — bot username for Telegram deep-link mint. */
+export type AuthAppDeps = {
+  botUsername?: string
+}
+
 /** @description Membership row returned by auth endpoints (non-deleted empresas only). */
 export type MembershipRow = {
   empresa_id: string
   nome: string
   papel: string
+}
+
+/**
+ * @description Convert bytes to lowercase hex string.
+ */
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+/**
+ * @description SHA-256 hex digest of a UTF-8 string (raw link code or session token).
+ */
+async function sha256Hex(raw: string): Promise<string> {
+  const data = new TextEncoder().encode(raw)
+  const digest = await crypto.subtle.digest('SHA-256', data)
+  return bytesToHex(new Uint8Array(digest))
 }
 
 /**
@@ -106,10 +130,36 @@ async function hasActiveMembership(
 }
 
 /**
- * @description Build a Hono app with POST login/logout/active-empresa and GET /me.
- * Closes over `db` for hermetic tests (node:sqlite) and worker mounting.
+ * @description True when the user has a row in user_telegram_links (never returns telegram_user_id).
  */
-export function createAuthApp(db: DbLike): Hono<{ Variables: SessionVariables }> {
+async function isTelegramLinked(db: DbLike, userId: string): Promise<boolean> {
+  const row = await Promise.resolve(
+    db
+      .prepare(
+        `SELECT user_id FROM user_telegram_links WHERE user_id = ?`,
+      )
+      .get(userId),
+  )
+  return !!row && typeof row.user_id === 'string'
+}
+
+/**
+ * @description Detect SQLite/D1 unique-constraint failures (concurrent mint race).
+ */
+function isUniqueConstraintError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /UNIQUE constraint failed/i.test(msg)
+}
+
+/**
+ * @description Build a Hono app with POST login/logout/active-empresa/telegram-link and GET /me.
+ * Closes over `db` for hermetic tests (node:sqlite) and worker mounting.
+ * Optional `authDeps.botUsername` enables Telegram deep-link mint (503 when unset/blank).
+ */
+export function createAuthApp(
+  db: DbLike,
+  authDeps?: AuthAppDeps,
+): Hono<{ Variables: SessionVariables }> {
   const app = new Hono<{ Variables: SessionVariables }>()
 
   app.post('/api/auth/login', async (c) => {
@@ -192,6 +242,8 @@ export function createAuthApp(db: DbLike): Hono<{ Variables: SessionVariables }>
       activeEmpresaId = null
     }
 
+    const linked = await isTelegramLinked(db, user.id)
+
     return c.json({
       id: user.id,
       email: user.email,
@@ -199,6 +251,7 @@ export function createAuthApp(db: DbLike): Hono<{ Variables: SessionVariables }>
       role: user.role,
       active_empresa_id: activeEmpresaId,
       memberships,
+      telegram: { linked },
     })
   })
 
@@ -231,6 +284,75 @@ export function createAuthApp(db: DbLike): Hono<{ Variables: SessionVariables }>
       {
         active_empresa_id: empresa_id,
         memberships,
+      },
+      200,
+    )
+  })
+
+  /**
+   * @description Mint a one-time Telegram deep-link code for the session user.
+   * Stores SHA-256(code) only; returns deep_link + expires_at (never raw hash/token).
+   */
+  app.post('/api/auth/telegram-link', requireSession(db), async (c) => {
+    const username = (authDeps?.botUsername ?? '').trim()
+    if (!username) {
+      return c.json({ error: 'Service unavailable' }, 503)
+    }
+
+    const user = c.get('user')
+    const batchDb = ensureBatchDb(db)
+
+    // Invalidate prior unused + insert; on UNIQUE (partial one-unused-per-user), retry once.
+    let id = ''
+    let rawCode = ''
+    for (let attempt = 0; attempt < 2; attempt++) {
+      id = crypto.randomUUID()
+      const codeBytes = crypto.getRandomValues(
+        new Uint8Array(TELEGRAM_LINK_CODE_BYTES),
+      )
+      rawCode = bytesToHex(codeBytes)
+      const codeHash = await sha256Hex(rawCode)
+
+      try {
+        await Promise.resolve(
+          batchDb.batch([
+            batchDb
+              .prepare(
+                `UPDATE telegram_link_codes
+                 SET used_at = datetime('now')
+                 WHERE user_id = ? AND used_at IS NULL`,
+              )
+              .bind(user.id),
+            batchDb
+              .prepare(
+                `INSERT INTO telegram_link_codes (id, user_id, code_hash, expires_at, used_at, created_at)
+                 VALUES (?, ?, ?, ${TELEGRAM_LINK_TTL_SQL}, NULL, datetime('now'))`,
+              )
+              .bind(id, user.id, codeHash),
+          ]),
+        )
+        break
+      } catch (err) {
+        if (attempt === 0 && isUniqueConstraintError(err)) continue
+        throw err
+      }
+    }
+
+    const row = await Promise.resolve(
+      db
+        .prepare(
+          `SELECT expires_at FROM telegram_link_codes WHERE id = ?`,
+        )
+        .get(id),
+    )
+
+    const expiresAt =
+      row && typeof row.expires_at === 'string' ? row.expires_at : ''
+
+    return c.json(
+      {
+        deep_link: `https://t.me/${username}?start=${rawCode}`,
+        expires_at: expiresAt,
       },
       200,
     )

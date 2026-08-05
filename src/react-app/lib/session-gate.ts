@@ -15,6 +15,7 @@ export type Me = {
   role: string;
   active_empresa_id: string | null;
   memberships: MeMembership[];
+  telegram: { linked: boolean };
 };
 
 /**

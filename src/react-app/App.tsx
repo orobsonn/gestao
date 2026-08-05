@@ -17,6 +17,7 @@ import { ExpertsPage } from "./pages/ExpertsPage";
 import { HomePage } from "./pages/HomePage";
 import { LoginPage } from "./pages/LoginPage";
 import { MeuTrabalhoPlaceholder } from "./pages/MeuTrabalhoPlaceholder";
+import { MinhaContaPage } from "./pages/MinhaContaPage";
 import { PlatformPage } from "./pages/PlatformPage";
 import { TarefaDetailPage } from "./pages/TarefaDetailPage";
 import { useAuth } from "./providers/auth-provider";
@@ -64,6 +65,7 @@ export function App() {
         />
         <Route path="/meu-trabalho" element={<MeuTrabalhoPlaceholder />} />
         <Route path="/tarefas/:id" element={<TarefaDetailPage />} />
+        <Route path="/minha-conta" element={<MinhaContaPage />} />
         <Route
           path="/admin"
           element={

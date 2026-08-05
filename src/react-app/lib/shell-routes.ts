@@ -12,6 +12,7 @@ export const SHELL_AUTH_PATHS = [
   "/experts",
   "/meu-trabalho",
   "/admin",
+  "/minha-conta",
 ] as const;
 
 /** @description Prefix for tarefa detail routes under the shell (`/tarefas/:id`). */

@@ -13,6 +13,36 @@ export const AUTH_ME_PATH = "/api/auth/me";
 export const AUTH_LOGIN_PATH = "/api/auth/login";
 export const AUTH_LOGOUT_PATH = "/api/auth/logout";
 export const AUTH_ACTIVE_EMPRESA_PATH = "/api/auth/active-empresa";
+export const AUTH_TELEGRAM_LINK_PATH = "/api/auth/telegram-link";
+
+/** @description Response from POST /api/auth/telegram-link (mint deep-link). */
+export type TelegramLinkMintResponse = {
+  deep_link: string;
+  expires_at: string;
+};
+
+/**
+ * @description Normalize raw /me JSON into Me — telegram.linked defaults to false if missing.
+ */
+function parseMe(raw: unknown): Me {
+  const body = (raw ?? {}) as Partial<Me> & {
+    telegram?: { linked?: boolean } | null;
+  };
+  return {
+    id: String(body.id ?? ""),
+    email: String(body.email ?? ""),
+    name: String(body.name ?? ""),
+    role: String(body.role ?? ""),
+    active_empresa_id:
+      body.active_empresa_id === undefined || body.active_empresa_id === null
+        ? null
+        : String(body.active_empresa_id),
+    memberships: Array.isArray(body.memberships) ? body.memberships : [],
+    telegram: {
+      linked: body.telegram?.linked === true,
+    },
+  };
+}
 
 /**
  * @description Builds POST /api/auth/active-empresa body with exact key empresa_id.
@@ -39,6 +69,7 @@ export async function authFetch(
 
 /**
  * @description GET /api/auth/me — 401 → null; other !ok → throw (callers keep prior me).
+ * Parses telegram.linked (defaults to false when missing).
  */
 export async function getMe(): Promise<Me | null> {
   const res = await authFetch(AUTH_ME_PATH, { method: "GET" });
@@ -48,7 +79,22 @@ export async function getMe(): Promise<Me | null> {
   if (!res.ok) {
     throw new Error(`getMe failed: ${res.status}`);
   }
-  return (await res.json()) as Me;
+  return parseMe(await res.json());
+}
+
+/**
+ * @description POST /api/auth/telegram-link — mints a one-time deep_link (credentials include).
+ */
+export async function mintTelegramLink(): Promise<TelegramLinkMintResponse> {
+  const res = await authFetch(AUTH_TELEGRAM_LINK_PATH, { method: "POST" });
+  if (!res.ok) {
+    throw new Error(`mintTelegramLink failed: ${res.status}`);
+  }
+  const body = (await res.json()) as Partial<TelegramLinkMintResponse>;
+  if (typeof body.deep_link !== "string" || typeof body.expires_at !== "string") {
+    throw new Error("mintTelegramLink: invalid response shape");
+  }
+  return { deep_link: body.deep_link, expires_at: body.expires_at };
 }
 
 /**
