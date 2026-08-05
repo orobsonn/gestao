@@ -2,8 +2,8 @@
 
 import type { MembershipPapel } from "../../shared/domain/enums.ts";
 
-/** @description Admin page tabs — Pessoas | IA only (no Telegram). */
-export const ADMIN_TAB_IDS = ["pessoas", "ia"] as const;
+/** @description Admin page tabs — Pessoas | IA | Telegram. */
+export const ADMIN_TAB_IDS = ["pessoas", "ia", "telegram"] as const;
 
 export type AdminTabId = (typeof ADMIN_TAB_IDS)[number];
 
@@ -80,4 +80,11 @@ export function mapLlmHealthReasonCopy(reason: string): string {
     return LLM_HEALTH_REASON_COPY[reason as LlmHealthReason];
   }
   return "Não foi possível verificar o status da IA.";
+}
+
+/**
+ * @description Identity passthrough for Telegram mint command display — preserves full '/vincular_* <64hex>' string exactly as returned by API (no stripping).
+ */
+export function displayTelegramMintCommand(command: string): string {
+  return command;
 }

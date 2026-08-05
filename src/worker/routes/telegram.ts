@@ -3,12 +3,26 @@
 import { Hono } from 'hono'
 import { ensureBatchDb } from '../services/create-empresa.ts'
 import type { DbLike } from '../types.ts'
+import {
+  claimCodeAndBindEmpresa,
+  type EmpresaBindOutcome,
+} from '../services/telegram-bind-empresa.ts'
+import {
+  claimCodeAndBindExpert,
+  type ExpertBindOutcome,
+} from '../services/telegram-bind-expert.ts'
 
 const WEBHOOK_PATH = '/api/telegram/webhook'
 const SECRET_HEADER = 'X-Telegram-Bot-Api-Secret-Token'
 const CODE_HEX_RE = /^[0-9a-f]{64}$/
 /** @description /start or /start@botname with optional payload. */
 const START_CMD_RE = /^\/start(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/
+/** @description /vincular_empresa <code> (optional @bot suffix). */
+const VINCULAR_EMPRESA_CMD_RE =
+  /^\/vincular_empresa(?:@[A-Za-z0-9_]+)?\s+([0-9a-f]{64})$/
+/** @description /vincular_expert <code> (optional @bot suffix). */
+const VINCULAR_EXPERT_CMD_RE =
+  /^\/vincular_expert(?:@[A-Za-z0-9_]+)?\s+([0-9a-f]{64})$/
 /** @description Bot API sendMessage timeout (ms) — webhook still returns 200 on failure. */
 const SEND_MESSAGE_TIMEOUT_MS = 8000
 
@@ -17,6 +31,48 @@ const COPY_INVALID =
   'Código inválido ou já usado. Gere um novo link em Minha conta.'
 const COPY_EXPIRED = 'Código expirado. Gere um novo link em Minha conta.'
 const COPY_COLLISION = 'Este Telegram já está vinculado a outra conta.'
+
+/** @description Empresa group bind success copy. */
+const COPY_EMPRESA_SUCCESS = 'Grupo vinculado com sucesso.'
+/** @description Empresa invalid/used copy. */
+const COPY_EMPRESA_INVALID =
+  'Código inválido ou já usado. Gere um novo comando em Admin → Telegram.'
+/** @description Empresa expired copy. */
+const COPY_EMPRESA_EXPIRED =
+  'Código expirado. Gere um novo comando em Admin → Telegram.'
+/** @description Not group/supergroup reject. */
+const COPY_EMPRESA_NOT_GROUP =
+  'Este comando só funciona em um grupo ou supergrupo.'
+/** @description Chat taken by other empresa. */
+const COPY_EMPRESA_CHAT_TAKEN =
+  'Este grupo já está vinculado a outra empresa.'
+/** @description Empresa already linked to different chat. */
+const COPY_EMPRESA_ALREADY_LINKED =
+  'Esta empresa já está vinculada a outro grupo.'
+
+/** @description Expert topic bind success copy. */
+const COPY_EXPERT_SUCCESS = 'Tópico vinculado com sucesso.'
+/** @description Expert invalid/used copy. */
+const COPY_EXPERT_INVALID =
+  'Código inválido ou já usado. Gere um novo comando em Admin → Telegram.'
+/** @description Expert expired copy. */
+const COPY_EXPERT_EXPIRED =
+  'Código expirado. Gere um novo comando em Admin → Telegram.'
+/** @description Not group/supergroup reject for expert. */
+const COPY_EXPERT_NOT_GROUP =
+  'Este comando só funciona em um grupo ou supergrupo.'
+/** @description Missing message_thread_id reject. */
+const COPY_EXPERT_MISSING_THREAD =
+  'Este comando só funciona dentro de um tópico do grupo.'
+/** @description Wrong chat (no matching empresa_telegram_chats). */
+const COPY_EXPERT_WRONG_CHAT =
+  'Vincule o grupo da empresa antes, ou use o grupo correto.'
+/** @description Thread taken by other expert. */
+const COPY_EXPERT_THREAD_TAKEN =
+  'Este tópico já está vinculado a outro expert.'
+/** @description Soft-deleted expert reject. */
+const COPY_EXPERT_DELETED =
+  'Expert não encontrado ou removido. Gere um novo comando em Admin → Telegram.'
 
 /** @description Optional deps for createTelegramApp — single global bot secrets + injectable fetch. */
 export type TelegramAppDeps = {
@@ -94,21 +150,27 @@ function runChanges(result: unknown): number | null {
 /**
  * @description Reply via Bot API sendMessage; no-op when botToken blank/missing.
  * Timeout + swallow errors so webhook can still ack Telegram with HTTP 200.
+ * Optional threadId → includes message_thread_id in payload.
  */
 async function sendTelegramMessage(
   deps: TelegramAppDeps,
   chatId: number | string,
   text: string,
+  threadId?: number | string,
 ): Promise<void> {
   const token = deps.botToken?.trim()
   if (!token) return
 
   const fetchImpl = deps.fetchImpl ?? fetch
+  const payload: Record<string, unknown> = { chat_id: chatId, text }
+  if (threadId != null) {
+    payload.message_thread_id = threadId
+  }
   try {
     await fetchImpl(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(SEND_MESSAGE_TIMEOUT_MS),
     })
   } catch {
@@ -363,10 +425,180 @@ export function createTelegramApp(
     }
 
     const startMatch = text.match(START_CMD_RE)
-    if (!startMatch) {
-      // Non-/start update — ack only, no LLM, no Bot API.
+    if (startMatch) {
+      // DM /start path unchanged — delegate to existing claimCodeAndBindTelegram.
+      const from =
+        message.from != null && typeof message.from === 'object'
+          ? (message.from as Record<string, unknown>)
+          : null
+      const chat =
+        message.chat != null && typeof message.chat === 'object'
+          ? (message.chat as Record<string, unknown>)
+          : null
+      const fromId = from != null && typeof from.id === 'number' ? from.id : null
+      const chatId =
+        chat != null && (typeof chat.id === 'number' || typeof chat.id === 'string')
+          ? chat.id
+          : fromId
+
+      if (fromId == null || chatId == null) {
+        return c.body(null, 200)
+      }
+
+      const rawCode = (startMatch[1] ?? '').trim()
+      if (!CODE_HEX_RE.test(rawCode)) {
+        await sendTelegramMessage(deps, chatId, COPY_INVALID)
+        return c.body(null, 200)
+      }
+
+      const codeHash = await sha256Hex(rawCode)
+      const telegramUserId = String(fromId)
+
+      try {
+        const outcome = await claimCodeAndBindTelegram(
+          db,
+          codeHash,
+          telegramUserId,
+        )
+        const copy =
+          outcome === 'success'
+            ? COPY_SUCCESS
+            : outcome === 'collision'
+              ? COPY_COLLISION
+              : outcome === 'expired'
+                ? COPY_EXPIRED
+                : COPY_INVALID
+        await sendTelegramMessage(deps, chatId, copy)
+      } catch {
+        // Swallow — ack Telegram; do not surface internal errors.
+      }
       return c.body(null, 200)
     }
+
+    const vincularMatch = text.match(VINCULAR_EMPRESA_CMD_RE)
+    if (vincularMatch) {
+      const chat =
+        message.chat != null && typeof message.chat === 'object'
+          ? (message.chat as Record<string, unknown>)
+          : null
+      const chatType = chat != null && typeof chat.type === 'string' ? chat.type : null
+      const chatId =
+        chat != null && (typeof chat.id === 'number' || typeof chat.id === 'string')
+          ? chat.id
+          : null
+      const threadId =
+        message != null &&
+        typeof message === 'object' &&
+        'message_thread_id' in message &&
+        (typeof (message as Record<string, unknown>).message_thread_id === 'number' ||
+          typeof (message as Record<string, unknown>).message_thread_id === 'string')
+          ? (message as Record<string, unknown>).message_thread_id as number | string
+          : undefined
+
+      if (!chatId) {
+        return c.body(null, 200)
+      }
+
+      if (chatType !== 'group' && chatType !== 'supergroup') {
+        await sendTelegramMessage(deps, chatId, COPY_EMPRESA_NOT_GROUP, threadId)
+        return c.body(null, 200)
+      }
+
+      const rawCode = vincularMatch[1]!
+      const codeHash = await sha256Hex(rawCode)
+
+      try {
+        const outcome: EmpresaBindOutcome = await claimCodeAndBindEmpresa(
+          db,
+          codeHash,
+          chatId,
+        )
+        let copy: string
+        if (outcome === 'success') {
+          copy = COPY_EMPRESA_SUCCESS
+        } else if (outcome === 'expired') {
+          copy = COPY_EMPRESA_EXPIRED
+        } else if (outcome === 'chat_taken') {
+          copy = COPY_EMPRESA_CHAT_TAKEN
+        } else if (outcome === 'already_linked') {
+          copy = COPY_EMPRESA_ALREADY_LINKED
+        } else {
+          copy = COPY_EMPRESA_INVALID
+        }
+        await sendTelegramMessage(deps, chatId, copy, threadId)
+      } catch {
+        // Swallow — ack Telegram.
+      }
+      return c.body(null, 200)
+    }
+
+    const vincularExpertMatch = text.match(VINCULAR_EXPERT_CMD_RE)
+    if (vincularExpertMatch) {
+      const chat =
+        message.chat != null && typeof message.chat === 'object'
+          ? (message.chat as Record<string, unknown>)
+          : null
+      const chatType = chat != null && typeof chat.type === 'string' ? chat.type : null
+      const chatId =
+        chat != null && (typeof chat.id === 'number' || typeof chat.id === 'string')
+          ? chat.id
+          : null
+      const threadId =
+        message != null &&
+        typeof message === 'object' &&
+        'message_thread_id' in message &&
+        (typeof (message as Record<string, unknown>).message_thread_id === 'number' ||
+          typeof (message as Record<string, unknown>).message_thread_id === 'string')
+          ? (message as Record<string, unknown>).message_thread_id as number | string
+          : undefined
+
+      if (!chatId) {
+        return c.body(null, 200)
+      }
+
+      if (chatType !== 'group' && chatType !== 'supergroup') {
+        await sendTelegramMessage(deps, chatId, COPY_EXPERT_NOT_GROUP, threadId)
+        return c.body(null, 200)
+      }
+
+      if (threadId == null) {
+        await sendTelegramMessage(deps, chatId, COPY_EXPERT_MISSING_THREAD, threadId)
+        return c.body(null, 200)
+      }
+
+      const rawCode = vincularExpertMatch[1]!
+      const codeHash = await sha256Hex(rawCode)
+
+      try {
+        const outcome: ExpertBindOutcome = await claimCodeAndBindExpert(
+          db,
+          codeHash,
+          chatId,
+          threadId,
+        )
+        let copy: string
+        if (outcome === 'success') {
+          copy = COPY_EXPERT_SUCCESS
+        } else if (outcome === 'expired') {
+          copy = COPY_EXPERT_EXPIRED
+        } else if (outcome === 'thread_taken') {
+          copy = COPY_EXPERT_THREAD_TAKEN
+        } else if (outcome === 'wrong_chat') {
+          copy = COPY_EXPERT_WRONG_CHAT
+        } else if (outcome === 'deleted') {
+          copy = COPY_EXPERT_DELETED
+        } else {
+          copy = COPY_EXPERT_INVALID
+        }
+        await sendTelegramMessage(deps, chatId, copy, threadId)
+      } catch {
+        // Swallow — ack Telegram.
+      }
+      return c.body(null, 200)
+    }
+
+    // Non-/start and non-/vincular_empresa update — ack only.
+    return c.body(null, 200)
 
     const from =
       message.from != null && typeof message.from === 'object'

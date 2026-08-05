@@ -1,4 +1,4 @@
-/** @description E2E Admin — criar pessoa + login, bloqueio membro, IA validate via route mock. */
+/** @description E2E Admin — criar pessoa + login, bloqueio membro, IA validate, Telegram mint via route mock. */
 
 import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 import { LoginPage } from "../pages/login.page";
@@ -6,6 +6,9 @@ import { ShellPage } from "../pages/shell.page";
 
 const PASSWORD = "password-e2e-ok";
 const MOCK_API_KEY = "sk-e2e-mock-key-NOT-REAL-xyz";
+/** @description Fixed 64-hex code returned by empresa-command mock (non-empty token after prefix). */
+const MOCK_EMPRESA_BIND_CODE = "a".repeat(64);
+const MOCK_EMPRESA_COMMAND = `/vincular_empresa ${MOCK_EMPRESA_BIND_CODE}`;
 
 /** @description Metadata DTO shape returned by LLM settings API mocks. */
 type LlmSettingsMetadataMock = {
@@ -17,12 +20,13 @@ type LlmSettingsMetadataMock = {
 };
 
 /**
- * @description Page Object da tela /admin (Pessoas | IA) — colocated while page-object path is gate-scoped to this file.
+ * @description Page Object da tela /admin (Pessoas | IA | Telegram) — colocated while page-object path is gate-scoped to this file.
  */
 class AdminPage {
   readonly heading: Locator;
   readonly pessoasTab: Locator;
   readonly iaTab: Locator;
+  readonly telegramTab: Locator;
   readonly pessoaButton: Locator;
   readonly dialog: Locator;
   readonly membroNome: Locator;
@@ -35,11 +39,18 @@ class AdminPage {
   readonly llmApiKey: Locator;
   readonly salvarButton: Locator;
   readonly validarButton: Locator;
+  /** @description Empresa Telegram card (grupo bind). */
+  readonly empresaTelegramCard: Locator;
+  /** @description Gerar comando button scoped to empresa Telegram card. */
+  readonly gerarEmpresaCommand: Locator;
+  /** @description Visible mint command text inside empresa Telegram card. */
+  readonly empresaCommandDisplay: Locator;
 
   constructor(private readonly page: Page) {
     this.heading = page.getByRole("heading", { name: /^admin$/i });
     this.pessoasTab = page.getByRole("tab", { name: /^pessoas$/i });
     this.iaTab = page.getByRole("tab", { name: /^ia$/i });
+    this.telegramTab = page.getByRole("tab", { name: /^telegram$/i });
     this.pessoaButton = page.getByRole("button", { name: /^pessoa$/i });
     this.dialog = page.getByRole("dialog");
     this.membroNome = page.locator("#membro-nome");
@@ -52,6 +63,17 @@ class AdminPage {
     this.llmApiKey = page.locator("#llm-api-key");
     this.salvarButton = page.getByRole("button", { name: /^salvar$/i });
     this.validarButton = page.getByRole("button", { name: /^validar$/i });
+    this.empresaTelegramCard = page.locator("div.rounded-xl.border").filter({
+      has: page.getByRole("heading", {
+        name: /empresa\s*[—–-]\s*grupo do telegram/i,
+      }),
+    });
+    this.gerarEmpresaCommand = this.empresaTelegramCard.getByRole("button", {
+      name: /^gerar comando$/i,
+    });
+    this.empresaCommandDisplay = this.empresaTelegramCard.getByText(
+      /\/vincular_empresa\s+\S+/,
+    );
   }
 
   /** @description Confirma que a AdminPage está visível. */
@@ -75,6 +97,11 @@ class AdminPage {
   /** @description Abre a aba IA. */
   async switchToIa(): Promise<void> {
     await this.iaTab.click();
+  }
+
+  /** @description Abre a aba Telegram. */
+  async switchToTelegram(): Promise<void> {
+    await this.telegramTab.click();
   }
 
   /**
@@ -211,6 +238,56 @@ class AdminPage {
       },
     );
   }
+
+  /**
+   * @description Instala page.route mocks for telegram-bindings status + empresa-command mint.
+   */
+  async mockTelegramBindingsApiRoutes(): Promise<void> {
+    const statusBody = {
+      empresa: { linked: false, linked_at: null },
+      experts: [] as Array<{
+        expert_id: string;
+        nome: string;
+        linked: boolean;
+        linked_at: string | null;
+      }>,
+    };
+
+    // More specific mint path first so it is not swallowed by the base bindings route
+    await this.page.route(
+      "**/api/empresa/telegram-bindings/empresa-command",
+      async (route: Route) => {
+        if (route.request().method() === "POST") {
+          const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({
+              command: MOCK_EMPRESA_COMMAND,
+              expires_at: expires,
+            }),
+          });
+          return;
+        }
+        await route.fallback();
+      },
+    );
+
+    await this.page.route(
+      "**/api/empresa/telegram-bindings",
+      async (route: Route) => {
+        if (route.request().method() === "GET") {
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify(statusBody),
+          });
+          return;
+        }
+        await route.fallback();
+      },
+    );
+  }
 }
 
 test.describe("Admin Pessoas e IA", () => {
@@ -324,5 +401,40 @@ test.describe("Admin Pessoas e IA", () => {
     const bodyText = await page.locator("body").innerText();
     expect(bodyText).not.toContain(MOCK_API_KEY);
     await expect(admin.llmApiKey).toHaveValue("");
+  });
+
+  /**
+   * @description Admin opens Telegram tab, generates empresa command; visible command starts with '/vincular_empresa ' plus non-empty code.
+   */
+  test("lt-e2e-admin-telegram-empresa-command", async ({ page }) => {
+    const login = new LoginPage(page);
+    const shell = new ShellPage(page);
+    const admin = new AdminPage(page);
+
+    await login.goto();
+    await login.login("admin@e2e.local", PASSWORD);
+    await expect(page).toHaveURL("/");
+    await expect(page.getByRole("heading", { name: /^home$/i })).toBeVisible();
+
+    await admin.mockTelegramBindingsApiRoutes();
+
+    await admin.openAdmin(shell);
+    await admin.switchToTelegram();
+
+    await expect(
+      page.getByRole("heading", {
+        name: /empresa\s*[—–-]\s*grupo do telegram/i,
+      }),
+    ).toBeVisible({ timeout: 20_000 });
+
+    await expect(admin.gerarEmpresaCommand).toBeVisible({ timeout: 15_000 });
+    await admin.gerarEmpresaCommand.click();
+
+    await expect(admin.empresaCommandDisplay).toBeVisible({ timeout: 20_000 });
+
+    const commandText = (await admin.empresaCommandDisplay.innerText()).trim();
+    expect(commandText.startsWith("/vincular_empresa ")).toBe(true);
+    const codeToken = commandText.slice("/vincular_empresa ".length).trim();
+    expect(codeToken.length).toBeGreaterThan(0);
   });
 });

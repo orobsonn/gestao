@@ -36,6 +36,9 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 - [telegram-webhook-atomic-claim](#telegram-webhook-atomic-claim) — webhook claim+bind atomic (D1 batch / BEGIN IMMEDIATE); secret fail-closed; always-200 after secret OK
 - [me-telegram-linked-boolean-only](#me-telegram-linked-boolean-only) — client sees only telegram.linked boolean; never telegram_user_id, code, or bot token
 - [telegram-unlink-burn-codes](#telegram-unlink-burn-codes) — DELETE unlink hard-removes link + burns unused mint codes in one batch; 204 empty; session user only
+- [bind-code-reject-without-claim](#bind-code-reject-without-claim) — one-shot bind codes: pre-check map conflicts before claim (or unclaim on reject); D1 batch must not burn code without map
+- [partial-unique-no-null-key](#partial-unique-no-null-key) — SQLite partial UNIQUE never keys a NULL-able column alone; split indexes by kind with non-null keys
+- [telegram-forum-reply-thread-id](#telegram-forum-reply-thread-id) — Bot API sendMessage inside a forum topic must include message_thread_id or the reply lands in General
 
 ---
 
@@ -276,3 +279,27 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 **Why:** Unlink that only deletes `user_telegram_links` leaves unused mint codes valid until TTL — a leaked deep_link could re-bind after the user unlinked.
 
 **How to apply:** `DELETE /api/auth/telegram-link` (session) batches hard-DELETE of the session user's link row **and** `UPDATE telegram_link_codes SET used_at=now() WHERE user_id=? AND used_at IS NULL`. Always **204** empty body (idempotent). Never return `telegram_user_id`.
+
+---
+
+## bind-code-reject-without-claim
+
+**Why:** A D1 path that `UPDATE used_at` in its own batch, then checks map conflicts and fails, burns the one-shot code with no binding. Hermetic `BEGIN IMMEDIATE` + ROLLBACK tests stay green and hide the prod hole.
+
+**How to apply:** Pre-check chat_taken / already_linked / wrong_chat / thread_taken / soft-delete **before** claim (or unclaim on reject). Redelivery: used code + map already matching target → success. See `telegram-bind-empresa.ts` / `telegram-bind-expert.ts` claimViaBatch.
+
+---
+
+## partial-unique-no-null-key
+
+**Why:** SQLite UNIQUE treats every NULL as distinct, so `UNIQUE(empresa_id, expert_id) WHERE used_at IS NULL` does not enforce one unused empresa code when expert_id is NULL.
+
+**How to apply:** Split partial indexes: `UNIQUE(empresa_id) WHERE used_at IS NULL AND kind='empresa'` and `UNIQUE(expert_id) WHERE used_at IS NULL AND kind='expert'`, plus CHECK pairing kind↔expert_id. Pattern in `migrations/0006_telegram_grupo_topico.sql`.
+
+---
+
+## telegram-forum-reply-thread-id
+
+**Why:** In Telegram forum groups, `sendMessage` without `message_thread_id` posts to General — admin who pasted `/vincular_expert` in a topic never sees the success/error reply in-place.
+
+**How to apply:** When the inbound update has `message.message_thread_id`, pass it through on Bot API sendMessage. Extend `sendTelegramMessage(chatId, text, threadId?)`.

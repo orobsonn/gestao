@@ -9,11 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Vínculo Telegram grupo/tópico: comandos copiáveis `/vincular_empresa` e `/vincular_expert` na aba Admin
+- Migration `0006` (`telegram_bind_codes`, `empresa_telegram_chats`, `expert_telegram_topics`) e resolução de contexto só por mapa
+- Webhook aplica binds com rejeição sem sobrescrever vínculo alheio; e2e Admin Telegram
+
 ### Changed
 
 ### Fixed
 
 ### Removed
+
 
 ## [0.9.1] - 2026-08-05
 

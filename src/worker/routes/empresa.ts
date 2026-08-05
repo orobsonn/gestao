@@ -22,6 +22,7 @@ import {
   type LlmProbe,
 } from './llm-settings.ts'
 import { registerTarefaRoutes } from './tarefas.ts'
+import { registerTelegramBindingsRoutes } from './telegram-bindings.ts'
 
 /** @description Optional deps for createEmpresaApp (LLM encryption secret + injectable probe). */
 export type EmpresaAppDeps = {
@@ -159,6 +160,7 @@ export function createEmpresaApp(
     llmKeyEncryptionSecret: deps?.llmKeyEncryptionSecret,
     llmProbe: deps?.llmProbe,
   })
+  registerTelegramBindingsRoutes(app, db)
 
   return app
 }
