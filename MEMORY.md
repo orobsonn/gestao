@@ -31,6 +31,10 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 - [shell-domain-breadcrumb](#shell-domain-breadcrumb) — hierarchical Experts→… trail owned by AppShell; pages only inject names via useDomainBreadcrumbNames (clear-on-unmount)
 - [route-bound-parent-ids](#route-bound-parent-ids) — create under expert/campanha binds parent id from the route; nested campanha.expert mismatch → canonical redirect
 - [campanha-task-filters-delete](#campanha-task-filters-delete) — campaign task list filters are status+dono only; task delete is direct (no confirm modal)
+- [telegram-link-user-global](#telegram-link-user-global) — user↔Telegram link is account-global (no empresa_id); multi-empresa shares one Telegram identity
+- [partial-unique-one-unused-code](#partial-unique-one-unused-code) — at most one unused link code per user via partial UNIQUE WHERE used_at IS NULL + mint invalidate batch
+- [telegram-webhook-atomic-claim](#telegram-webhook-atomic-claim) — webhook claim+bind atomic (D1 batch / BEGIN IMMEDIATE); secret fail-closed; always-200 after secret OK
+- [me-telegram-linked-boolean-only](#me-telegram-linked-boolean-only) — client sees only telegram.linked boolean; never telegram_user_id, code, or bot token
 
 ---
 
@@ -231,3 +235,35 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 **Why:** PRD locks campaign list filters to status + dono (no campaign filter inside a campaign). Task delete is intentionally direct (no confirm) for web and bot parity.
 
 **How to apply:** UI filter controls = exactly `CAMPANHA_TASK_FILTER_CONTROL_IDS` (`status`, `dono`); client `filterTarefas`. `TAREFA_DELETE_REQUIRES_CONFIRMATION = false`; Excluir calls DELETE immediately then navigates to the campaign list.
+
+---
+
+## telegram-link-user-global
+
+**Why:** Telegram identity is a person, not a tenant membership. Putting `empresa_id` on the link would force re-link per house and break multi-empresa DM notify.
+
+**How to apply:** `user_telegram_links` / `telegram_link_codes` are user-scoped only (FK → users, no empresa_id). One Telegram per user, one user per Telegram (UNIQUE).
+
+---
+
+## partial-unique-one-unused-code
+
+**Why:** Concurrent mints can leave two unused codes if only soft-invalidate then insert without a DB constraint.
+
+**How to apply:** Partial UNIQUE index on `telegram_link_codes(user_id) WHERE used_at IS NULL`. Mint invalidates prior unused in the same batch as insert; retry once on UNIQUE.
+
+---
+
+## telegram-webhook-atomic-claim
+
+**Why:** Check-then-act claim or claim-then-bind without a transaction burns codes or unlinks users under concurrency/Telegram retries.
+
+**How to apply:** Conditional `UPDATE … used_at IS NULL AND expires_at > now` with `changes===1`; bind (UPSERT) in the same immediate txn/batch. Require `TELEGRAM_WEBHOOK_SECRET` (401 if missing/mismatch). After secret OK always HTTP 200 to Telegram.
+
+---
+
+## me-telegram-linked-boolean-only
+
+**Why:** Exposing `telegram_user_id` or code material on `/me` leaks identifiers and expands the client attack surface.
+
+**How to apply:** `GET /api/auth/me` returns only `telegram: { linked: boolean }`. Raw code appears once in mint `deep_link`; DB stores SHA-256 only.

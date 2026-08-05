@@ -1,11 +1,11 @@
 /**
  * Locked auth routes contract — POST /api/auth/login, POST /api/auth/logout, GET /api/auth/me.
  * Hermetic: node:sqlite + Hono app.request via createAuthApp(db).
- * Applies migrations/0001_init.sql (foreign_keys=ON).
+ * openDb applies every migrations/*.sql sorted with PRAGMA foreign_keys=ON.
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -14,7 +14,7 @@ import { hashPassword } from "../src/worker/auth/password.ts";
 import { createAuthApp } from "../src/worker/routes/auth.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const MIGRATION_PATH = resolve(__dirname, "../migrations/0001_init.sql");
+const MIGRATIONS_DIR = resolve(__dirname, "../migrations");
 
 const SESSION_COOKIE_NAME = "gestao_session";
 const LOGIN_PATH = "/api/auth/login";
@@ -22,14 +22,18 @@ const LOGOUT_PATH = "/api/auth/logout";
 const ME_PATH = "/api/auth/me";
 
 /**
- * @description Open in-memory SQLite, enable FKs, apply 0001_init.sql.
+ * @description Open in-memory SQLite, enable FKs, apply every migrations/*.sql sorted by filename.
  * @returns {DatabaseSync}
  */
 function openDb() {
   const db = new DatabaseSync(":memory:");
   db.exec("PRAGMA foreign_keys = ON");
-  const sql = readFileSync(MIGRATION_PATH, "utf8");
-  db.exec(sql);
+  const files = readdirSync(MIGRATIONS_DIR)
+    .filter((name) => name.endsWith(".sql"))
+    .sort();
+  for (const name of files) {
+    db.exec(readFileSync(resolve(MIGRATIONS_DIR, name), "utf8"));
+  }
   return db;
 }
 
