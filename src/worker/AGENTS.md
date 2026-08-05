@@ -19,6 +19,7 @@ Cloudflare Worker API (Hono) for auth, bootstrap, and platform provision.
 - **D1 adapter:** must implement `all()` for multi-row reads (memberships, membros list).
 - **Bootstrap:** secrets `SUPER_ADMIN_*` only; never wrangler.jsonc vars; no password overwrite; no promote of existing user; pre-hash email collision check; middleware only under `/api/*`.
 - **Hermetic tests:** export `createAuthApp(db)` / `createPlatformApp(db)` / `createEmpresaApp(db)` factories; node:sqlite + full migration chain (`migrations/*.sql` sorted lexically, `PRAGMA foreign_keys=ON`).
+- **Telegram unlink:** `DELETE /api/auth/telegram-link` behind `requireSession`; batch hard-DELETE `user_telegram_links` + burn unused `telegram_link_codes` for session `user.id` only; always **204** empty body; never return `telegram_user_id`.
 
 ## Domain CRUD (experts / campanhas / tarefas)
 

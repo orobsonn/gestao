@@ -98,6 +98,16 @@ export async function mintTelegramLink(): Promise<TelegramLinkMintResponse> {
 }
 
 /**
+ * @description DELETE /api/auth/telegram-link — unlinks Telegram for session user (credentials include).
+ */
+export async function unlinkTelegram(): Promise<void> {
+  const res = await authFetch(AUTH_TELEGRAM_LINK_PATH, { method: "DELETE" });
+  if (!res.ok) {
+    throw new Error(`unlinkTelegram failed: ${res.status}`);
+  }
+}
+
+/**
  * @description POST /api/auth/login — does not treat response JSON as full me.
  */
 export async function login(

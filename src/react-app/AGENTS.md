@@ -19,3 +19,4 @@ SPA shell (Vite + React + shadcn/ui) for auth session UI and tenant navigation.
 - **Domain breadcrumb:** hierarchical trail owned by `AppShell` (`resolveDomainBreadcrumbSegments` + `useDomainBreadcrumbNames` clear-on-unmount); never sole “Gestão” on nested expert/campanha paths.
 - **Route-bound parents:** create campanha/tarefa binds parent id from the route; campanha.expert_id mismatch → canonical redirect.
 - **Campanha tasks:** filters only status + dono; tarefa delete direct (no confirm modal).
+- **Minha conta Telegram unlink:** linked → only Desvincular (`UNLINK_REQUIRES_CONFIRMATION=false`); pending → Vincular + Atualizar; `unlinkTelegram` then `refreshMe`; success toast only when `resolveUnlinkFeedback` sees `linked===false` (`refreshMe` soft-fails without throw).

@@ -35,6 +35,7 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 - [partial-unique-one-unused-code](#partial-unique-one-unused-code) — at most one unused link code per user via partial UNIQUE WHERE used_at IS NULL + mint invalidate batch
 - [telegram-webhook-atomic-claim](#telegram-webhook-atomic-claim) — webhook claim+bind atomic (D1 batch / BEGIN IMMEDIATE); secret fail-closed; always-200 after secret OK
 - [me-telegram-linked-boolean-only](#me-telegram-linked-boolean-only) — client sees only telegram.linked boolean; never telegram_user_id, code, or bot token
+- [telegram-unlink-burn-codes](#telegram-unlink-burn-codes) — DELETE unlink hard-removes link + burns unused mint codes in one batch; 204 empty; session user only
 
 ---
 
@@ -267,3 +268,11 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 **Why:** Exposing `telegram_user_id` or code material on `/me` leaks identifiers and expands the client attack surface.
 
 **How to apply:** `GET /api/auth/me` returns only `telegram: { linked: boolean }`. Raw code appears once in mint `deep_link`; DB stores SHA-256 only.
+
+---
+
+## telegram-unlink-burn-codes
+
+**Why:** Unlink that only deletes `user_telegram_links` leaves unused mint codes valid until TTL — a leaked deep_link could re-bind after the user unlinked.
+
+**How to apply:** `DELETE /api/auth/telegram-link` (session) batches hard-DELETE of the session user's link row **and** `UPDATE telegram_link_codes SET used_at=now() WHERE user_id=? AND used_at IS NULL`. Always **204** empty body (idempotent). Never return `telegram_user_id`.
