@@ -290,7 +290,7 @@ export async function defaultLlmProbe(args: {
 }
 
 /**
- * @description Register GET/PUT llm-settings, POST validate, GET health on createEmpresaApp.
+ * @description Register GET/PUT llm-settings, POST validate, and GET health on createEmpresaApp.
  * Tenant scope from session only. Admin for settings write/read; health any active member.
  */
 export function registerLlmRoutes(

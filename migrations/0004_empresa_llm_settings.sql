@@ -1,4 +1,4 @@
--- Per-empresa LLM provider settings (encrypted key material + validation status).
+-- Per-empresa LLM provider settings (encrypted key material + validation status; ciphertext/iv pairing CHECK).
 -- One row per empresa. Metadata status 'none' = no row (API layer), never stored here.
 
 CREATE TABLE empresa_llm_settings (
