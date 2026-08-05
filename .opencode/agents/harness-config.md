@@ -1,7 +1,7 @@
 ---
 description: Harness lifecycle lane. Runs exactly one operator-invoked lifecycle operation - reconfigure model routing, or install/update the harness - and stops. No triage, no ceremony, no delivery, no subagents.
 mode: primary
-model: openai/gpt-5.6-terra
+model: xai/grok-4.5
 temperature: 0.1
 permission:
   "*": deny

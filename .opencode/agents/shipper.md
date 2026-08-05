@@ -1,7 +1,7 @@
 ---
 description: Delivery agent — selective stage, Conventional Commit, push, PR. Never edits code, never runs gates. Assumes gates already passed.
 mode: subagent
-model: openai/gpt-5.6-luna
+model: xai/grok-4.5
 temperature: 0.1
 permission:
   classify: deny

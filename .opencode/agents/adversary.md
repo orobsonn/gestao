@@ -1,7 +1,7 @@
 ---
 description: Adversary eye — enters VIRGIN and finds failure modes that make the implementation unviable. Read-only.
 mode: subagent
-model: openai/gpt-5.6-sol
+model: xai/grok-4.5
 temperature: 0.3
 permission:
   classify: deny
