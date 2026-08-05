@@ -134,9 +134,9 @@ Any match in plan `scope_paths` forces FULL mode.
 | adversary | `xai/grok-4.5` |
 | compliance | `xai/grok-4.5` |
 | security | `xai/grok-4.5` |
-| executor/sniper low | `xai/grok-4.5` |
-| executor/sniper medium | `xai/grok-4.5` |
-| executor/sniper high | `xai/grok-4.5` |
+| executor/sniper low | `xai/grok-4.3` |
+| executor/sniper medium | `xai/grok-4.3` |
+| executor/sniper high | `xai/grok-4.3` |
 | test-author | `xai/grok-4.5` |
 | harvester / shipper | `xai/grok-4.5` |
 

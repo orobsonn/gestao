@@ -1,7 +1,7 @@
 ---
 description: Implements HIGH-complexity tasks (band 31+ residual reasoning). OpenAI Terra hand. Stays strictly inside scope_paths.
 mode: all
-model: xai/grok-4.5
+model: xai/grok-4.3
 temperature: 0.1
 steps: 80
 tools:

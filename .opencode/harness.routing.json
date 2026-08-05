@@ -23,26 +23,26 @@
     "executor": {
       "tiers": {
         "low": {
-          "model": "xai/grok-4.5"
+          "model": "xai/grok-4.3"
         },
         "medium": {
-          "model": "xai/grok-4.5"
+          "model": "xai/grok-4.3"
         },
         "high": {
-          "model": "xai/grok-4.5"
+          "model": "xai/grok-4.3"
         }
       }
     },
     "sniper": {
       "tiers": {
         "low": {
-          "model": "xai/grok-4.5"
+          "model": "xai/grok-4.3"
         },
         "medium": {
-          "model": "xai/grok-4.5"
+          "model": "xai/grok-4.3"
         },
         "high": {
-          "model": "xai/grok-4.5"
+          "model": "xai/grok-4.3"
         }
       }
     },
@@ -58,6 +58,9 @@
   },
   "modelCapabilities": {
     "xai/grok-4.5": {
+      "supportsReasoningEffort": false
+    },
+    "xai/grok-4.3": {
       "supportsReasoningEffort": false
     }
   }

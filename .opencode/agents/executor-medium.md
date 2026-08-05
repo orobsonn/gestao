@@ -1,7 +1,7 @@
 ---
 description: Implements MEDIUM-complexity tasks — the DEFAULT executor. OpenAI Luna hand.
 mode: all
-model: xai/grok-4.5
+model: xai/grok-4.3
 temperature: 0.1
 steps: 80
 tools:
