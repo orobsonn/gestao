@@ -21,7 +21,7 @@ D1 SQL migrations for the gestao multi-tenant schema.
 | `0002_sessions_active_empresa.sql` | **No-op forward stub.** `active_empresa_id` was folded into 0001; kept so history stays monotonic for DBs that already recorded 0002. Do **not** `ADD COLUMN` again (duplicate column on fresh apply). |
 | `0003_campanha_optional_fields.sql` | Forward: `campanhas.data_inicio`, `data_fim` (nullable TEXT), `notas` (`TEXT NOT NULL DEFAULT ''`). |
 | `0004_empresa_llm_settings.sql` | Forward: `empresa_llm_settings` (PK `empresa_id` → `empresas`, encrypted key material + provider + status `unvalidated\|valid\|invalid`). No plaintext key; no soft-delete; Metadata `none` = no row. |
-| `0005_telegram_dm_link.sql` | Forward: `telegram_link_codes` (user-scoped single-use codes, UNIQUE `code_hash`, FK `users` CASCADE, partial unique index one-unused-per-user on `user_id` WHERE `used_at IS NULL`) + `user_telegram_links` (PK `user_id`, UNIQUE `telegram_user_id`, FK `users` CASCADE). No `empresa_id` — link is global per user. |
+| `0005_telegram_dm_link.sql` | Forward: `telegram_link_codes` (user-scoped one-shot codes, UNIQUE `code_hash`, FK `users` CASCADE, partial unique index one-unused-per-user on `user_id` WHERE `used_at IS NULL`) + `user_telegram_links` (PK `user_id`, UNIQUE `telegram_user_id`, FK `users` CASCADE). No `empresa_id` — link is global per user. |
 
 ### Hermetic openDb rule (tests + local)
 
