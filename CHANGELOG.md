@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+## [0.8.0] - 2026-08-04
+
+### Added
+
+- Tela Admin com abas Pessoas (criar usuário/senha/papel) e IA (OpenAI|Anthropic + Validar)
+- API de settings LLM por empresa com chave cifrada AES-GCM e health claro
+- Migration `empresa_llm_settings` e secret `LLM_KEY_ENCRYPTION_SECRET`
+- E2E Admin (`tests/e2e/web-admin.spec.ts`) — local e prod
+
 ## [0.7.0] - 2026-08-04
 
 ### Added
