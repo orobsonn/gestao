@@ -10,7 +10,7 @@ import {
   UNKNOWN_PATH_REDIRECT,
   resolveShellBranch,
 } from "./lib/shell-routes";
-import { AdminPlaceholder } from "./pages/AdminPlaceholder";
+import { AdminPage } from "./pages/AdminPage";
 import { CampanhaTarefasPage } from "./pages/CampanhaTarefasPage";
 import { ExpertCampanhasPage } from "./pages/ExpertCampanhasPage";
 import { ExpertsPage } from "./pages/ExpertsPage";
@@ -68,7 +68,7 @@ export function App() {
           path="/admin"
           element={
             <RequireEmpresaAdmin>
-              <AdminPlaceholder />
+              <AdminPage />
             </RequireEmpresaAdmin>
           }
         />

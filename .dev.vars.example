@@ -8,3 +8,6 @@ ANTHROPIC_AUTH_TOKEN=
 # Leave empty in the example; set real values only in gitignored .dev.vars.
 SUPER_ADMIN_EMAIL=
 SUPER_ADMIN_PASSWORD=
+
+# Per-tenant LLM API key encryption at rest (Worker secret — never wrangler vars).
+LLM_KEY_ENCRYPTION_SECRET=
