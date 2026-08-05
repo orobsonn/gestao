@@ -17,7 +17,17 @@ import type { DbLike } from '../types.ts'
 import { registerCampanhaRoutes } from './campanhas.ts'
 import { registerExpertRoutes } from './experts.ts'
 import { registerHomeRoutes } from './home.ts'
+import {
+  registerLlmRoutes,
+  type LlmProbe,
+} from './llm-settings.ts'
 import { registerTarefaRoutes } from './tarefas.ts'
+
+/** @description Optional deps for createEmpresaApp (LLM encryption secret + injectable probe). */
+export type EmpresaAppDeps = {
+  llmKeyEncryptionSecret?: string
+  llmProbe?: LlmProbe
+}
 
 const createMembroBodySchema = z.object({
   name: z.string().min(1).max(200),
@@ -73,12 +83,14 @@ async function listMembros(
 }
 
 /**
- * @description Build a Hono app with GET/POST /api/empresa/membros.
+ * @description Build a Hono app with GET/POST /api/empresa/membros + domain CRUD + LLM settings.
  * Tenant scope comes only from session active_empresa_id (never client body).
- * Closes over `db` for hermetic tests (node:sqlite) and worker mounting.
+ * Closes over `db` (and optional deps) for hermetic tests (node:sqlite) and worker mounting.
+ * Second arg is optional so existing createEmpresaApp(db) callers stay valid.
  */
 export function createEmpresaApp(
   db: DbLike,
+  deps?: EmpresaAppDeps,
 ): Hono<{ Variables: ActiveEmpresaVariables }> {
   const app = new Hono<{ Variables: ActiveEmpresaVariables }>()
   const batchDb = ensureBatchDb(db)
@@ -143,6 +155,10 @@ export function createEmpresaApp(
   registerCampanhaRoutes(app, db)
   registerTarefaRoutes(app, db)
   registerHomeRoutes(app, db)
+  registerLlmRoutes(app, db, {
+    llmKeyEncryptionSecret: deps?.llmKeyEncryptionSecret,
+    llmProbe: deps?.llmProbe,
+  })
 
   return app
 }

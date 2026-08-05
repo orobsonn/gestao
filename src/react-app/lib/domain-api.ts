@@ -1,4 +1,4 @@
-/** @description Typed authFetch wrappers for experts, campanhas, tarefas, and membros APIs. */
+/** @description Typed authFetch wrappers for experts, campanhas, tarefas, membros, and LLM settings APIs. */
 
 import { authFetch } from "./auth-api.ts";
 import type {
@@ -26,6 +26,9 @@ export const EXPERTS_API_PATH = "/api/empresa/experts";
 export const CAMPANHAS_API_PATH = "/api/empresa/campanhas";
 export const TAREFAS_API_PATH = "/api/empresa/tarefas";
 export const MEMBROS_API_PATH = "/api/empresa/membros";
+export const LLM_SETTINGS_API_PATH = "/api/empresa/llm-settings";
+export const LLM_VALIDATE_API_PATH = "/api/empresa/llm-settings/validate";
+export const LLM_HEALTH_API_PATH = "/api/empresa/llm-settings/health";
 
 /**
  * @description GET path for campanhas under an expert.
@@ -149,6 +152,36 @@ export type CreateMembroBody = {
   papel: MembershipPapel;
 };
 
+/** @description LLM provider values accepted by PUT llm-settings. */
+export type LlmProvider = "openai" | "anthropic";
+
+/** @description Metadata DTO from GET/PUT/validate llm-settings — never includes key material. */
+export type LlmSettingsMetadata = {
+  provider: LlmProvider | null;
+  has_key: boolean;
+  status: "none" | "unvalidated" | "valid" | "invalid";
+  validated_at: string | null;
+  last_error: string | null;
+};
+
+/** @description PUT /api/empresa/llm-settings body. */
+export type PutLlmSettingsBody = {
+  provider: LlmProvider;
+  api_key: string;
+};
+
+/** @description Health payload from GET llm-settings/health. */
+export type LlmHealthResponse =
+  | { ok: true }
+  | {
+      ok: false;
+      reason:
+        | "llm_not_configured"
+        | "llm_key_missing"
+        | "llm_key_unvalidated"
+        | "llm_key_invalid";
+    };
+
 // ── UI contracts (pure) ────────────────────────────────────────────────────
 
 /** @description Primary Experts page heading — must stay exactly "Experts" for e2e */
@@ -235,9 +268,12 @@ async function assertOk(res: Response, label: string): Promise<void> {
 }
 
 /**
- * @description JSON POST/PATCH init with credentials via authFetch.
+ * @description JSON POST/PATCH/PUT init with credentials via authFetch.
  */
-function jsonInit(method: "POST" | "PATCH", body: unknown): RequestInit {
+function jsonInit(
+  method: "POST" | "PATCH" | "PUT",
+  body: unknown,
+): RequestInit {
   return {
     method,
     headers: { "Content-Type": "application/json" },
@@ -449,4 +485,44 @@ export async function createMembro(body: CreateMembroBody): Promise<{
     papel: string;
     created: boolean;
   };
+}
+
+// ── LLM settings ───────────────────────────────────────────────────────────
+
+/**
+ * @description GET /api/empresa/llm-settings — Metadata DTO only (admin).
+ */
+export async function fetchLlmSettings(): Promise<LlmSettingsMetadata> {
+  const res = await authFetch(LLM_SETTINGS_API_PATH, { method: "GET" });
+  await assertOk(res, "fetchLlmSettings");
+  return (await res.json()) as LlmSettingsMetadata;
+}
+
+/**
+ * @description PUT /api/empresa/llm-settings — encrypts key server-side; returns Metadata only.
+ */
+export async function putLlmSettings(
+  body: PutLlmSettingsBody,
+): Promise<LlmSettingsMetadata> {
+  const res = await authFetch(LLM_SETTINGS_API_PATH, jsonInit("PUT", body));
+  await assertOk(res, "putLlmSettings");
+  return (await res.json()) as LlmSettingsMetadata;
+}
+
+/**
+ * @description POST /api/empresa/llm-settings/validate — probe provider; returns Metadata only.
+ */
+export async function validateLlmSettings(): Promise<LlmSettingsMetadata> {
+  const res = await authFetch(LLM_VALIDATE_API_PATH, { method: "POST" });
+  await assertOk(res, "validateLlmSettings");
+  return (await res.json()) as LlmSettingsMetadata;
+}
+
+/**
+ * @description GET /api/empresa/llm-settings/health — any active member.
+ */
+export async function fetchLlmHealth(): Promise<LlmHealthResponse> {
+  const res = await authFetch(LLM_HEALTH_API_PATH, { method: "GET" });
+  await assertOk(res, "fetchLlmHealth");
+  return (await res.json()) as LlmHealthResponse;
 }

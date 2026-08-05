@@ -20,6 +20,7 @@ D1 SQL migrations for the gestao multi-tenant schema.
 | `0001_init.sql` | Full schema bootstrap (includes `sessions.active_empresa_id`). |
 | `0002_sessions_active_empresa.sql` | **No-op forward stub.** `active_empresa_id` was folded into 0001; kept so history stays monotonic for DBs that already recorded 0002. Do **not** `ADD COLUMN` again (duplicate column on fresh apply). |
 | `0003_campanha_optional_fields.sql` | Forward: `campanhas.data_inicio`, `data_fim` (nullable TEXT), `notas` (`TEXT NOT NULL DEFAULT ''`). |
+| `0004_empresa_llm_settings.sql` | Forward: `empresa_llm_settings` (PK `empresa_id` → `empresas`, encrypted key material + provider + status `unvalidated\|valid\|invalid`). No plaintext key; no soft-delete; Metadata `none` = no row. |
 
 ### Hermetic openDb rule (tests + local)
 

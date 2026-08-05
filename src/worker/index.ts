@@ -10,13 +10,15 @@ import type { BatchDbLike, BatchStatement } from './services/create-empresa.ts'
 import type { DbLike, StatementLike } from './types.ts'
 
 /**
- * @description Worker bindings: D1, static assets, optional super-admin bootstrap secrets.
+ * @description Worker bindings: D1, static assets, optional super-admin bootstrap secrets,
+ * optional LLM key encryption secret (never wrangler vars — runtime secret / .dev.vars).
  */
 export type WorkerEnv = {
   DB: D1Database
   ASSETS: Fetcher
   SUPER_ADMIN_EMAIL?: string
   SUPER_ADMIN_PASSWORD?: string
+  LLM_KEY_ENCRYPTION_SECRET?: string
 }
 
 /**
@@ -98,11 +100,14 @@ app.all('/api/platform/*', (c) => {
 })
 
 /**
- * @description Dispatch /api/empresa/* to createEmpresaApp closed over this request's DB.
+ * @description Dispatch /api/empresa/* to createEmpresaApp closed over this request's DB + LLM deps.
+ * Default probe is used in prod (no llmProbe inject); secret from WorkerEnv only.
  */
 app.all('/api/empresa/*', (c) => {
   const db = d1AsDbLike(c.env.DB)
-  return createEmpresaApp(db).fetch(c.req.raw)
+  return createEmpresaApp(db, {
+    llmKeyEncryptionSecret: c.env.LLM_KEY_ENCRYPTION_SECRET,
+  }).fetch(c.req.raw)
 })
 
 /**
