@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+## [0.9.1] - 2026-08-05
+
+### Added
+
+- Desvincular Telegram na Minha conta: botão só quando vinculado (sem confirmação)
+- API `DELETE /api/auth/telegram-link` (sessão, 204 idempotente) com burn de códigos mint não usados
+- Toast de sucesso só após a sessão confirmar `linked === false`
+
 ## [0.9.0] - 2026-08-05
 
 ### Added
