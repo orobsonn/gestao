@@ -5,13 +5,26 @@ import { createGestaoBotTools, type GestaoBotToolsClosure } from '../../src/work
 import { bindTurnTokenToAgent, consumeAgentBoundTurn, consumeTurnContext } from '../../src/worker/agent/turn-context-store.ts'
 import { enableForeignKeysAsync } from '../../src/worker/db.ts'
 import { buildAgentIdentityPrompt } from '../../src/worker/agent/run-agent-turn.ts'
-const playbook = `**Playbook curto (pt-br) para o agente gestao-bot**
+const playbook = `**Playbook gestao-bot (pt-br) — respostas no Telegram**
 
+## Formato (obrigatório)
+- Respostas curtas, mobile-first, otimizadas para Telegram.
+- Use *negrito* (um asterisco) e _itálico_ quando ajudar; evite markdown de título (#) e HTML.
+- Emojis com sentido (não enfeite à toa):
+  - 📋 lista de tarefas · 📝 a fazer · 🔄 fazendo · ✅ feito
+  - ➕ criou · ✏️ atualizou · 🗑 excluiu · 👥 membros · 🏢 empresa · ⚠️ erro/aviso · 📭 vazio
+- Listas: uma linha por item, com bullet • ou emoji de status — sem "1. **Título:** … **Status:** …".
+- Se a tool devolver \`telegram_preview\`, use esse texto (pode enxugar, não reformatar do zero).
+- Máx. ~15 itens visíveis; se houver mais, diga quantos ficaram de fora.
+- Sem jargão técnico, sem ids UUID na resposta (a menos que o usuário peça).
+- Sem despedida longa; 1 linha de oferta de ajuda no máximo.
+
+## Regras de domínio
 - Use tools para estado (listar/criar/atualizar/excluir tarefas, listar membros, etc.).
-- Recuse qualquer pedido de criar campanha — diga que o usuário deve criar via web.
-- Em DM: switch de empresa via definir_empresa_ativa termina o turn imediatamente (tool terminal).
-- Nunca invente tenant ids, expert ids ou dados de outras empresas.
-- DM boundary line (se presente) avisa que resultados anteriores podem ser de outra empresa.`
+- Recuse criar campanha — oriente pela web.
+- Em DM: definir_empresa_ativa termina o turn na hora (tool terminal).
+- Nunca invente tenant/expert ids nem dados de outra empresa.
+- Se houver DM boundary line, avise que resultados anteriores podem ser de outra empresa.`
 
 const SECRET_HEADER = 'x-gestao-agent-internal-secret'
 const TURN_TOKEN_HEADER = 'x-gestao-turn-token'
@@ -173,14 +186,24 @@ export default defineAgent(async ({ id, env }) => {
   if (!secret) {
     return baseAgentConfig(modelForProvider('openai'))
   }
+  // Flue may initialize defineAgent twice in one submission (Worker route + DO).
+  // Turn row is single-use: first init consumes; second must reuse DO-local cache
+  // or we register no API key → "No API key for provider: openai".
   const cacheKey = id
+  let ctx: any = null
   const consumed = await consumeAgentBoundTurn(db, id, secret)
-  if (!consumed.ok) {
-    turnCache.delete(cacheKey)
-    return baseAgentConfig(modelForProvider('openai'))
+  if (consumed.ok) {
+    turnCache.set(cacheKey, { ctx: consumed, expiresAtMs: Date.now() + 120_000 })
+    ctx = consumed
+  } else {
+    const hit = turnCache.get(cacheKey)
+    if (hit && hit.expiresAtMs > Date.now()) {
+      ctx = hit.ctx
+    } else {
+      turnCache.delete(cacheKey)
+      return baseAgentConfig(modelForProvider('openai'))
+    }
   }
-  turnCache.set(cacheKey, { ctx: consumed, expiresAtMs: Date.now() + 120_000 })
-  const ctx = consumed
   await enableForeignKeysAsync(db)
   if (ctx.provider && ctx.apiKey) registerProvider(ctx.provider, { apiKey: ctx.apiKey })
   const token = String((env as any).TELEGRAM_BOT_TOKEN ?? '').trim()
