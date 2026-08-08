@@ -17,3 +17,6 @@ LLM_KEY_ENCRYPTION_SECRET=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_BOT_USERNAME=
 TELEGRAM_WEBHOOK_SECRET=
+
+# Agent internal secret for Flue DO route guard (Worker secret — never wrangler vars).
+GESTAO_AGENT_INTERNAL_SECRET=

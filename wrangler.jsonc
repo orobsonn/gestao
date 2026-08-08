@@ -23,5 +23,19 @@
       "database_id": "dd58c125-2a8f-406c-8aa6-bef02027d0e9",
       "migrations_dir": "migrations"
     }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "FLUE_GESTAO_BOT_AGENT",
+        "class_name": "FlueGestaoBotAgent"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["FlueRegistry", "FlueGestaoBotAgent"]
+    }
   ]
 }
