@@ -117,36 +117,67 @@ export async function runAgentToolCallsUntilStop({
   }
 }
 
-/** @description Empty sandbox per Flue contract — minimal SessionEnv stubs (write/exec throw). */
-const emptySandbox = {
-  createSessionEnv: async () => ({
-    exec: async () => ({ stdout: '', stderr: '', exitCode: 1 }),
-    readFile: async () => { throw new Error('disabled') },
-    readFileBuffer: async () => { throw new Error('disabled') },
-    writeFile: async () => { throw new Error('disabled') },
-    stat: async () => { throw new Error('disabled') },
-    readdir: async () => [],
-    exists: async () => false,
-    mkdir: async () => {},
+/** @description Agent workspace root — Flue paths call cwd.endsWith; must be a real string. */
+const AGENT_CWD = '/session'
+
+/**
+ * @description Minimal SessionEnv for Workers (no real FS). cwd/resolvePath required by Flue path helpers.
+ * Application tools must NOT go in sandbox.tools (that channel skips valibot→parameters); they go on defineAgent.tools.
+ */
+const minimalSessionEnv = {
+  cwd: AGENT_CWD,
+  exec: async () => ({ stdout: '', stderr: '', exitCode: 1 }),
+  readFile: async () => {
+    throw new Error('disabled')
+  },
+  readFileBuffer: async () => {
+    throw new Error('disabled')
+  },
+  writeFile: async () => {},
+  stat: async () => ({
+    type: 'file' as const,
+    size: 0,
+    isFile: true,
+    isDirectory: false,
   }),
+  readdir: async () => [],
+  exists: async () => false,
+  mkdir: async () => {},
+  rm: async () => {},
+  resolvePath: (p: string) => p,
+}
+
+/** @description Sandbox factory — session FS only; no bash/write/edit workspace tools. */
+const emptySandbox = {
+  createSessionEnv: async () => minimalSessionEnv,
   tools: () => [],
 }
 
 /** @description Exported for tests (sandbox.tools factory returns []). */
 export const gestaoBotAgent = { sandbox: emptySandbox }
 
+function baseAgentConfig(model: string) {
+  return {
+    model,
+    cwd: AGENT_CWD,
+    instructions: playbook,
+    tools: [] as ReturnType<typeof createGestaoBotTools>,
+    sandbox: emptySandbox,
+  }
+}
+
 /** @description Default defineAgent — plain config, id NOT spread, tools array not factory. */
 export default defineAgent(async ({ id, env }) => {
   const db = asDbLike((env as any).DB)
   const secret = (env as any).LLM_KEY_ENCRYPTION_SECRET as string | undefined
   if (!secret) {
-    return { model: modelForProvider('openai'), instructions: playbook, tools: [], sandbox: emptySandbox }
+    return baseAgentConfig(modelForProvider('openai'))
   }
   const cacheKey = id
   const consumed = await consumeAgentBoundTurn(db, id, secret)
   if (!consumed.ok) {
     turnCache.delete(cacheKey)
-    return { model: modelForProvider('openai'), instructions: playbook, tools: [], sandbox: emptySandbox }
+    return baseAgentConfig(modelForProvider('openai'))
   }
   turnCache.set(cacheKey, { ctx: consumed, expiresAtMs: Date.now() + 120_000 })
   const ctx = consumed
@@ -178,7 +209,13 @@ export default defineAgent(async ({ id, env }) => {
   })
   const boundary = ctx.dm_boundary_line ? `\n${ctx.dm_boundary_line}` : ''
   const instructions = playbook + '\n' + identity + boundary
-  return { model: modelForProvider(ctx.provider), instructions, tools, sandbox: emptySandbox }
+  return {
+    model: modelForProvider(ctx.provider),
+    cwd: AGENT_CWD,
+    instructions,
+    tools,
+    sandbox: emptySandbox,
+  }
 })
 
 /**
