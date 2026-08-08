@@ -139,8 +139,14 @@ app.all('/api/telegram/*', (c) => {
         turnToken: args.turnToken,
         agentInternalSecret: c.env.GESTAO_AGENT_INTERNAL_SECRET ?? '',
         app: {
-          fetch: (input, init) =>
-            app.fetch(input as Request, c.env, c.executionCtx),
+          // Hono fetch wants a Request; runAgentTurn passes (url, init) — must not drop init.
+          fetch: (input, init) => {
+            const req =
+              input instanceof Request
+                ? input
+                : new Request(String(input), init)
+            return app.fetch(req, c.env, c.executionCtx)
+          },
         },
       }),
     botToken: c.env.TELEGRAM_BOT_TOKEN,
