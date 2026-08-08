@@ -60,24 +60,46 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<string> {
       body: JSON.stringify({ message: input.message }),
     })
 
+    const raw = await res.text()
     if (!res.ok) {
+      console.error('[runAgentTurn] non-ok', {
+        status: res.status,
+        sessionId: input.sessionId,
+        body: raw.slice(0, 500),
+      })
       return SAFE_REPLY
     }
-    const raw = await res.text()
     let text = ''
     try {
-      const body = JSON.parse(raw) as { result?: unknown }
+      const body = JSON.parse(raw) as { result?: unknown; error?: unknown }
       const r = body?.result
       if (typeof r === 'string') text = r.trim()
       else if (r && typeof r === 'object' && typeof (r as { text?: unknown }).text === 'string') {
         text = String((r as { text: string }).text).trim()
       }
+      if (!text) {
+        console.error('[runAgentTurn] empty text', {
+          sessionId: input.sessionId,
+          keys: body && typeof body === 'object' ? Object.keys(body) : [],
+          body: raw.slice(0, 500),
+        })
+      }
     } catch {
       // non-JSON body: only accept plain non-JSON text if it doesn't look like JSON object
       if (raw && !raw.trimStart().startsWith('{')) text = raw.trim()
+      else {
+        console.error('[runAgentTurn] non-json body', {
+          sessionId: input.sessionId,
+          body: raw.slice(0, 500),
+        })
+      }
     }
     return text || SAFE_REPLY
-  } catch {
+  } catch (err) {
+    console.error('[runAgentTurn] throw', {
+      sessionId: input.sessionId,
+      err: err instanceof Error ? err.message : String(err),
+    })
     return SAFE_REPLY
   }
 }
