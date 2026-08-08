@@ -673,11 +673,12 @@ export function createTelegramApp(
           })
           .catch(() => {})
 
-        if (deps.waitUntil) {
-          deps.waitUntil(turnPromise)
-        } else {
-          await turnPromise
-        }
+        // Always await the agent turn so the Telegram reply is sent before the
+        // isolate freezes. waitUntil() was cancelling long Flue ?wait=result
+        // turns ("waitUntil() tasks did not complete within the allowed time")
+        // and the user got no message. Telegram allows the webhook to take time;
+        // deps.waitUntil remains available for true fire-and-forget side work.
+        await turnPromise
       }
     }
 
