@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "deploy": "npm run build && npx flue build --target cloudflare && wrangler deploy --config dist/gestao/wrangler.json",
+    "deploy": "node scripts/deploy-gestao.mjs",
     "cf-typegen": "wrangler types",
     "db:migrate:local": "wrangler d1 migrations apply gestao-db --local",
     "db:migrate": "wrangler d1 migrations apply gestao-db --remote",
