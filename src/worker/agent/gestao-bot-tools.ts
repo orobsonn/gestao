@@ -176,7 +176,8 @@ export function createGestaoBotTools(
   tools.push(
     defineTool({
       name: 'listar_tarefas',
-      description: 'Lista tarefas da empresa ativa.',
+      description:
+        'Lista tarefas da empresa ativa. Preferir o campo telegram_preview na resposta ao usuário (já formatado p/ Telegram).',
       input: v.object({}),
       run: async ({ input }) => {
         await ensureFk()
@@ -185,8 +186,58 @@ export function createGestaoBotTools(
           FROM tarefas
           WHERE empresa_id = ? AND deleted_at IS NULL
           ORDER BY created_at DESC LIMIT 50`
-        const rows = await Promise.resolve(db.prepare(sql).all(closureEmpresaId))
-        return { tarefas: rows ?? [] }
+        const rows = (await Promise.resolve(
+          db.prepare(sql).all(closureEmpresaId),
+        )) as Array<Record<string, unknown>>
+        const list = rows ?? []
+        const statusMeta: Record<
+          string,
+          { label: string; emoji: string }
+        > = {
+          a_fazer: { label: 'A fazer', emoji: '📝' },
+          fazendo: { label: 'Fazendo', emoji: '🔄' },
+          feito: { label: 'Feito', emoji: '✅' },
+        }
+        const enriched = list.map((r) => {
+          const st = String(r.status ?? '')
+          const meta = statusMeta[st] ?? { label: st || '—', emoji: '•' }
+          return {
+            ...r,
+            status_label: meta.label,
+            status_emoji: meta.emoji,
+          }
+        })
+        const byStatus = {
+          a_fazer: enriched.filter((t) => t.status === 'a_fazer'),
+          fazendo: enriched.filter((t) => t.status === 'fazendo'),
+          feito: enriched.filter((t) => t.status === 'feito'),
+        }
+        const lines: string[] = []
+        if (enriched.length === 0) {
+          lines.push('📭 Nenhuma tarefa aberta por aqui.')
+        } else {
+          lines.push(`📋 *Tarefas* (${enriched.length})`)
+          lines.push('')
+          const sections: Array<[string, typeof enriched]> = [
+            ['📝 A fazer', byStatus.a_fazer],
+            ['🔄 Fazendo', byStatus.fazendo],
+            ['✅ Feito', byStatus.feito],
+          ]
+          for (const [title, items] of sections) {
+            if (items.length === 0) continue
+            lines.push(`${title} · ${items.length}`)
+            for (const t of items.slice(0, 15)) {
+              const titulo = String(t.titulo ?? 'Sem título').trim() || 'Sem título'
+              lines.push(`• ${titulo}`)
+            }
+            if (items.length > 15) {
+              lines.push(`_…e mais ${items.length - 15}_`)
+            }
+            lines.push('')
+          }
+        }
+        const telegram_preview = lines.join('\n').trim()
+        return { tarefas: enriched, telegram_preview, total: enriched.length }
       },
     }),
   )

@@ -164,6 +164,7 @@ async function sendTelegramMessage(
   chatId: number | string,
   text: string,
   threadId?: number | string,
+  parseMode?: 'Markdown' | 'HTML',
 ): Promise<void> {
   const token = deps.botToken?.trim()
   if (!token) return
@@ -173,13 +174,27 @@ async function sendTelegramMessage(
   if (threadId != null) {
     payload.message_thread_id = threadId
   }
+  if (parseMode) {
+    payload.parse_mode = parseMode
+  }
   try {
-    await fetchImpl(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const res = await fetchImpl(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(SEND_MESSAGE_TIMEOUT_MS),
     })
+    // If Markdown fails (unbalanced *), retry plain text so the user still gets the reply.
+    if (parseMode && res && typeof (res as Response).ok === 'boolean' && !(res as Response).ok) {
+      const plain: Record<string, unknown> = { chat_id: chatId, text }
+      if (threadId != null) plain.message_thread_id = threadId
+      await fetchImpl(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(plain),
+        signal: AbortSignal.timeout(SEND_MESSAGE_TIMEOUT_MS),
+      })
+    }
   } catch {
     // Bot API down/timeout must not fail the webhook ack.
   }
@@ -667,7 +682,13 @@ export function createTelegramApp(
                   ? (msg as Record<string, unknown>).message_thread_id
                   : undefined
               if (chatId != null) {
-                return sendTelegramMessage(deps, chatId, result.reply, threadId)
+                return sendTelegramMessage(
+                  deps,
+                  chatId,
+                  result.reply,
+                  threadId,
+                  'Markdown',
+                )
               }
             }
           })
