@@ -39,6 +39,11 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 - [bind-code-reject-without-claim](#bind-code-reject-without-claim) — one-shot bind codes: pre-check map conflicts before claim (or unclaim on reject); D1 batch must not burn code without map
 - [partial-unique-no-null-key](#partial-unique-no-null-key) — SQLite partial UNIQUE never keys a NULL-able column alone; split indexes by kind with non-null keys
 - [telegram-forum-reply-thread-id](#telegram-forum-reply-thread-id) — Bot API sendMessage inside a forum topic must include message_thread_id or the reply lands in General
+- [bot-session-id-stable](#bot-session-id-stable) — agent session ids are `topic:{chat}:{thread}` / `dm:{userId}` (String-canonical), never random UUID per message
+- [bot-tenant-closure-not-model](#bot-tenant-closure-not-model) — tool tenant scope comes only from closure (binding/pin/actor), never model-supplied empresa_id
+- [turn-context-oneshot-encrypted](#turn-context-oneshot-encrypted) — Flue body is `{message}` only; gated fields live in D1 turn row (ciphertext+iv) + turn-token header, single-use consume
+- [flue-deploy-after-vite](#flue-deploy-after-vite) — deploy order is vite/client build then `flue build` then wrangler `--config dist/gestao/wrangler.json` so Flue worker is not overwritten
+- [d1-run-changes-dual-shape](#d1-run-changes-dual-shape) — stmt.run() changes may be `{changes}` (node:sqlite) or `{meta.changes}` (D1); normalize both
 
 ---
 
@@ -303,3 +308,43 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 **Why:** In Telegram forum groups, `sendMessage` without `message_thread_id` posts to General — admin who pasted `/vincular_expert` in a topic never sees the success/error reply in-place.
 
 **How to apply:** When the inbound update has `message.message_thread_id`, pass it through on Bot API sendMessage. Extend `sendTelegramMessage(chatId, text, threadId?)`.
+
+---
+
+## bot-session-id-stable
+
+**Why:** Random session ids per message break Flue agent memory continuity across turns on the same topic/DM.
+
+**How to apply:** `buildSessionId({ kind:'topic', chatId, threadId })` → `topic:{String(chat)}:{String(thread)}`; DM → `dm:{String(userId)}`. Canonicalize ids with `String()` so number/string parity holds.
+
+---
+
+## bot-tenant-closure-not-model
+
+**Why:** Model-supplied `empresa_id` / expert ids are an authz bypass vector for multi-tenant tools.
+
+**How to apply:** `createGestaoBotTools(closure)` fixes `empresa_id`, `expert_id`, `actor_user_id`, `surface` from orchestrator gates only. Tool inputs never authorize tenant scope. Topic campanha must match closure expert (LD-22).
+
+---
+
+## turn-context-oneshot-encrypted
+
+**Why:** Flue strips extra JSON body keys and Worker ALS does not cross the DO hop; plaintext apiKey must not ride the Flue body.
+
+**How to apply:** Orchestrator `insertTurnContext` stores encryptLlmApiKey pair + identity; `runAgentTurn` POSTs `{message}` + `x-gestao-turn-token` + internal secret. Agent route binds/consumes single-use; parse `?wait=result` as `{ result: { text } }`, never raw envelope.
+
+---
+
+## flue-deploy-after-vite
+
+**Why:** `vite build` with the Cloudflare plugin overwrites `dist/gestao` and destroys Flue's `configureFlueRuntime` + DO class exports if it runs after `flue build`.
+
+**How to apply:** `deploy`: `npm run build && npx flue build --target cloudflare && wrangler deploy --config dist/gestao/wrangler.json`. Keep source `wrangler.jsonc` main as Vite entry for locked contract; production ships the generated Flue entry. Migrations include `FlueRegistry` + agent class additive only.
+
+---
+
+## d1-run-changes-dual-shape
+
+**Why:** Hermetic node:sqlite returns `{ changes }`; D1 returns `{ meta: { changes } }`. Claim/dedup logic that reads only one shape silently fails open or closed.
+
+**How to apply:** Normalize via helper reading both shapes (see `runChanges` in gestao-bot-tools / claim helpers). Assert `changes === 1` for first-processor semantics.
