@@ -1,4 +1,4 @@
-/** @description Flue gestao-bot agent definition + secret guard + turn bridge via D1 + ALS. */
+/** @description Flue gestao-bot: agent definition, secret guard, D1 turn bridge + ALS. */
 
 import { defineAgent, registerProvider, type AgentRouteHandler } from '@flue/runtime'
 import { createGestaoBotTools, type GestaoBotToolsClosure } from '../../src/worker/agent/gestao-bot-tools.ts'

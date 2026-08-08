@@ -152,6 +152,7 @@ async function getTelegramLink(
   return null
 }
 
+/** @internal factory for tenant-closed defineTool set */
 export function createGestaoBotTools(
   closure: GestaoBotToolsClosure,
 ): ToolDefinition[] {
