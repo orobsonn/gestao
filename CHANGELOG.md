@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+## [0.11.0] - 2026-08-08
+
+### Added
+
+- Bot Telegram via Flue: tools de domínio (tarefas/membros/notify/pin DM), memória de sessão por tópico/DM
+- Migration `0007` (dedup webhook, pin DM, turn-context one-shot com api key cifrada)
+- Gates de ator, LLM por empresa, pin multi-empresa e composição deploy (flue build + DO FlueGestaoBotAgent/FlueRegistry)
+- Secret guard no agent HTTP (`GESTAO_AGENT_INTERNAL_SECRET`); body Flue só `{message}` + turn-token
+
 ## [0.10.0] - 2026-08-05
 
 ### Added
