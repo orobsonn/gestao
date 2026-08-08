@@ -11,6 +11,8 @@ import {
   claimCodeAndBindExpert,
   type ExpertBindOutcome,
 } from '../services/telegram-bind-expert.ts'
+import { claimTelegramUpdateId } from '../services/telegram-webhook-dedup.ts'
+import { handleBotTurn } from '../services/bot-turn-orchestrator.ts'
 
 const WEBHOOK_PATH = '/api/telegram/webhook'
 const SECRET_HEADER = 'X-Telegram-Bot-Api-Secret-Token'
@@ -79,6 +81,11 @@ export type TelegramAppDeps = {
   botToken?: string
   webhookSecret?: string
   fetchImpl?: typeof fetch
+  botUsername?: string
+  llmKeyEncryptionSecret?: string
+  waitUntil?: (p: Promise<unknown> | unknown) => void
+  runAgentTurn?: (args: any) => Promise<string>
+  agentInternalSecret?: string
 }
 
 /** @description Outcome of atomic claim + optional link bind. */
@@ -406,6 +413,20 @@ export function createTelegramApp(
       return c.body(null, 200)
     }
 
+    // LD-21: claim update_id before any side effects (dedup); duplicate → 200 no-op
+    const updateId =
+      body != null &&
+      typeof body === 'object' &&
+      'update_id' in body
+        ? String((body as { update_id: unknown }).update_id)
+        : ''
+    if (updateId) {
+      const { claimed } = await claimTelegramUpdateId(db, updateId)
+      if (!claimed) {
+        return c.body(null, 200)
+      }
+    }
+
     const message =
       body != null &&
       typeof body === 'object' &&
@@ -597,55 +618,69 @@ export function createTelegramApp(
       return c.body(null, 200)
     }
 
-    // Non-/start and non-/vincular_empresa update — ack only.
-    return c.body(null, 200)
+    // After commands: topic @mention or private DM → handleBotTurn (if runAgentTurn provided)
+    if (deps.runAgentTurn && deps.botUsername && deps.llmKeyEncryptionSecret) {
+      const chatType =
+        message &&
+        typeof message === 'object' &&
+        'chat' in message &&
+        message.chat != null &&
+        typeof message.chat === 'object' &&
+        typeof (message.chat as Record<string, unknown>).type === 'string'
+          ? (message.chat as Record<string, unknown>).type
+          : null
+      const isPrivate = chatType === 'private'
+      const isTopicMention =
+        (chatType === 'group' || chatType === 'supergroup') &&
+        typeof text === 'string' &&
+        text.includes(`@${deps.botUsername}`)
+      if (isPrivate || isTopicMention) {
+        const turnPromise = handleBotTurn({
+          db,
+          update: body,
+          botUsername: deps.botUsername,
+          llmKeyEncryptionSecret: deps.llmKeyEncryptionSecret,
+          runAgentTurn: deps.runAgentTurn,
+        })
+          .then((result: any) => {
+            if (result && typeof result.reply === 'string' && result.reply.trim()) {
+              const msg =
+                body != null &&
+                typeof body === 'object' &&
+                'message' in body &&
+                (body as { message: unknown }).message != null &&
+                typeof (body as { message: unknown }).message === 'object'
+                  ? (body as { message: Record<string, unknown> }).message
+                  : null
+              const chat =
+                msg && typeof msg === 'object' && 'chat' in msg && msg.chat != null && typeof msg.chat === 'object'
+                  ? (msg.chat as Record<string, unknown>)
+                  : null
+              const chatId =
+                chat && (typeof chat.id === 'number' || typeof chat.id === 'string') ? chat.id : null
+              const threadId =
+                msg &&
+                typeof msg === 'object' &&
+                'message_thread_id' in msg &&
+                (typeof (msg as Record<string, unknown>).message_thread_id === 'number' ||
+                  typeof (msg as Record<string, unknown>).message_thread_id === 'string')
+                  ? (msg as Record<string, unknown>).message_thread_id
+                  : undefined
+              if (chatId != null) {
+                return sendTelegramMessage(deps, chatId, result.reply, threadId)
+              }
+            }
+          })
+          .catch(() => {})
 
-    const from =
-      message.from != null && typeof message.from === 'object'
-        ? (message.from as Record<string, unknown>)
-        : null
-    const chat =
-      message.chat != null && typeof message.chat === 'object'
-        ? (message.chat as Record<string, unknown>)
-        : null
-    const fromId = from != null && typeof from.id === 'number' ? from.id : null
-    const chatId =
-      chat != null && (typeof chat.id === 'number' || typeof chat.id === 'string')
-        ? chat.id
-        : fromId
-
-    if (fromId == null || chatId == null) {
-      return c.body(null, 200)
+        if (deps.waitUntil) {
+          deps.waitUntil(turnPromise)
+        } else {
+          await turnPromise
+        }
+      }
     }
 
-    const rawCode = (startMatch[1] ?? '').trim()
-    if (!CODE_HEX_RE.test(rawCode)) {
-      await sendTelegramMessage(deps, chatId, COPY_INVALID)
-      return c.body(null, 200)
-    }
-
-    const codeHash = await sha256Hex(rawCode)
-    const telegramUserId = String(fromId)
-
-    // Post-auth: always 200 even if claim/send throws (Telegram retries on non-2xx).
-    try {
-      const outcome = await claimCodeAndBindTelegram(
-        db,
-        codeHash,
-        telegramUserId,
-      )
-      const copy =
-        outcome === 'success'
-          ? COPY_SUCCESS
-          : outcome === 'collision'
-            ? COPY_COLLISION
-            : outcome === 'expired'
-              ? COPY_EXPIRED
-              : COPY_INVALID
-      await sendTelegramMessage(deps, chatId, copy)
-    } catch {
-      // Swallow — ack Telegram; do not surface internal errors.
-    }
     return c.body(null, 200)
   })
 

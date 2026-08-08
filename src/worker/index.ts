@@ -7,8 +7,10 @@ import { createAuthApp } from './routes/auth.ts'
 import { createEmpresaApp } from './routes/empresa.ts'
 import { createPlatformApp } from './routes/platform.ts'
 import { createTelegramApp } from './routes/telegram.ts'
+import { runAgentTurn } from './agent/run-agent-turn.ts'
 import type { BatchDbLike, BatchStatement } from './services/create-empresa.ts'
 import type { DbLike, StatementLike } from './types.ts'
+import { flue } from '@flue/runtime/routing'
 
 /**
  * @description Worker bindings: D1, static assets, optional super-admin bootstrap secrets,
@@ -24,6 +26,7 @@ export type WorkerEnv = {
   TELEGRAM_BOT_TOKEN?: string
   TELEGRAM_BOT_USERNAME?: string
   TELEGRAM_WEBHOOK_SECRET?: string
+  GESTAO_AGENT_INTERNAL_SECRET?: string
 }
 
 /**
@@ -118,17 +121,38 @@ app.all('/api/empresa/*', (c) => {
 })
 
 /**
- * @description Dispatch /api/telegram/* to createTelegramApp (webhook secret + bot token + fetch).
+ * @description Dispatch /api/telegram/* via createTelegramApp — webhook secret + bot token + fetch.
  * Mounted before ASSETS; single global bot secrets from WorkerEnv only.
  */
 app.all('/api/telegram/*', (c) => {
   const db = d1AsDbLike(c.env.DB)
+  const waitUntil = c.executionCtx?.waitUntil?.bind(c.executionCtx)
   return createTelegramApp(db, {
+    botUsername: c.env.TELEGRAM_BOT_USERNAME,
+    llmKeyEncryptionSecret: c.env.LLM_KEY_ENCRYPTION_SECRET,
+    waitUntil,
+    agentInternalSecret: c.env.GESTAO_AGENT_INTERNAL_SECRET,
+    runAgentTurn: (args) =>
+      runAgentTurn({
+        sessionId: args.sessionId,
+        message: args.message,
+        turnToken: args.turnToken,
+        agentInternalSecret: c.env.GESTAO_AGENT_INTERNAL_SECRET ?? '',
+        app: {
+          fetch: (input, init) =>
+            app.fetch(input as Request, c.env, c.executionCtx),
+        },
+      }),
     botToken: c.env.TELEGRAM_BOT_TOKEN,
     webhookSecret: c.env.TELEGRAM_WEBHOOK_SECRET,
     fetchImpl: fetch,
   }).fetch(c.req.raw)
 })
+
+/**
+ * @description Mount Flue agent routes (gestao-bot) BEFORE ASSETS catch-all so agent HTTP is not swallowed by SPA.
+ */
+app.route('/', flue())
 
 /**
  * @description Non-API: serve SPA/static assets (run_worker_first + not_found SPA).
