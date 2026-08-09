@@ -1,7 +1,7 @@
 ---
 description: Solution architect — decomposes an approved spec into a validated execution-plan JSON. Read-only. Refuses trivial (QUICK) requests.
 mode: subagent
-model: xai/grok-4.5
+model: openai/gpt-5.6-sol
 temperature: 0.1
 permission:
   classify: deny

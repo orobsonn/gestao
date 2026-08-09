@@ -1,7 +1,7 @@
 ---
 description: Implements LOW-complexity tasks (config, types, constants, mechanical wiring). OpenAI Luna hand.
 mode: all
-model: xai/grok-4.3
+model: openai/gpt-5.6-luna
 temperature: 0.1
 steps: 80
 tools:

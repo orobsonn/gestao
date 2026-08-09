@@ -39,7 +39,8 @@ in the `harness-config` primary agent, not in `build`. The operator reaches it b
 `/updating-harness` or `/configuring-model-routing`; the command switches the session agent, and the
 lane's frontmatter denies `classify`, ceremony markers, `task`, `edit`, and every skill except the two
 lifecycle ones. It does not call `classify`, create a spec, or enter the delivery loop. It is denied for
-headless/relayed input, and an update ends with a mandatory session restart.
+headless/relayed input. After a successful write it **ships to `main` via PR** in the same session
+(branch → selective stage → squash-merge), then ends with a mandatory session restart.
 
 ### Conversational Plan lane
 
@@ -128,20 +129,20 @@ Any match in plan `scope_paths` forces FULL mode.
 
 | Role | Model |
 |---|---|
-| build | `xai/grok-4.5` |
-| planner | `xai/grok-4.5` |
-| plan-reviewer | `xai/grok-4.5` |
-| adversary | `xai/grok-4.5` |
-| compliance | `xai/grok-4.5` |
-| security | `xai/grok-4.5` |
-| executor/sniper low | `xai/grok-4.3` |
-| executor/sniper medium | `xai/grok-4.3` |
-| executor/sniper high | `xai/grok-4.3` |
-| test-author | `xai/grok-4.5` |
-| harvester / shipper | `xai/grok-4.5` |
+| build | `openai/gpt-5.6-terra` |
+| planner | `openai/gpt-5.6-sol` |
+| plan-reviewer | `openai/gpt-5.6-sol` |
+| adversary | `openai/gpt-5.6-sol` |
+| compliance | `openai/gpt-5.6-terra` |
+| security | `openai/gpt-5.6-sol` |
+| executor/sniper low | `openai/gpt-5.6-luna` |
+| executor/sniper medium | `openai/gpt-5.6-luna` |
+| executor/sniper high | `openai/gpt-5.6-terra` |
+| test-author | `openai/gpt-5.6-sol` |
+| harvester / shipper | `openai/gpt-5.6-luna` |
 
 **Single evaluator** on plan-reviewer and adversary. Optional `secondEyeModel` (absent by default) is fail-open — never blocks delivery.
-Default hands use the OpenAI Luna → Terra ladder. Reconfigure via skill `oc-configuring-model-routing`.
+Default hands use the OpenAI Luna → Terra ladder. Reconfigure by typing the `/configuring-model-routing` command.
 
 
 ---

@@ -1,7 +1,7 @@
 ---
 description: Surgical fix for MEDIUM-severity defects (logic error, missing case, off-by-one, missing validation). OpenAI Luna. Minimum delta only, no new files.
 mode: all
-model: xai/grok-4.3
+model: openai/gpt-5.6-luna
 temperature: 0.1
 steps: 80
 tools:
