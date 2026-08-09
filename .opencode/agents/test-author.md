@@ -1,7 +1,7 @@
 ---
 description: Transcribes pinned locked_test assertions into one test file (and narrow maintenance edits). Hand role — fidelity-exempt (creates the frozen test).
 mode: all
-model: xai/grok-4.5
+model: openai/gpt-5.6-sol
 temperature: 0.1
 steps: 80
 tools:

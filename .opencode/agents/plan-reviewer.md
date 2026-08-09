@@ -1,7 +1,7 @@
 ---
 description: Plan-reviewer eye. Engineering audit of the execution-plan JSON BEFORE execution. Read-only. Returns APPROVE or REVISE.
 mode: subagent
-model: xai/grok-4.5
+model: openai/gpt-5.6-sol
 temperature: 0.1
 permission:
   classify: deny

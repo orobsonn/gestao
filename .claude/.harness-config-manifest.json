@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "harnessVersion": "v0.53.7",
+  "harnessVersion": "v0.54.1",
   "owned": {
     "permissions": {
       "allow": [

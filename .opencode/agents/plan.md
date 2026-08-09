@@ -1,7 +1,7 @@
 ---
 description: Conversational discovery and specification agent. Researches, brainstorms, challenges non-trivial proposals, and returns a Build Spec. Read-only except for two analysis carve-outs - the PRD artifact under docs/prd/ written by the oc-grill skill, and docs/architecture/deepening-candidates.md written by the oc-proposing-deepening skill.
 mode: primary
-model: xai/grok-4.5
+model: openai/gpt-5.6-terra
 temperature: 0.3
 permission:
   "*": deny
