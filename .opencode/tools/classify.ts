@@ -7,6 +7,7 @@
 import { tool } from "@opencode-ai/plugin/tool"
 import fs from "node:fs"
 import path from "node:path"
+import { resumedApprovedPlanMetadata } from "../lib/classify-resume.mjs"
 
 function errorResult(error: string, hint: string, received: string) {
   const payload = { error, hint, received }
@@ -118,6 +119,45 @@ export async function executeClassify(
   const finalMode = transition.mode
   const finalFeatureId = transition.featureId
   const peakMode = transition.peakMode
+
+  // A feature outlives a chat session. On a fresh session, adopt its most recent durable
+  // workflow state before creating a stub so planner/review/task progress is not discarded.
+  if (transition.action === "fresh") {
+    const { adoptFeatureResume, findFeatureResume } = await import("../lib/feature-resume.mjs")
+    const resume = findFeatureResume(context.directory, finalFeatureId)
+    if (resume && resume.sessionId !== sessionID && finalMode === resume.state.mode) {
+      const adopted = adoptFeatureResume(context.directory, sessionID, resume, finalMode)
+      if (!adopted.ok) {
+        return errorResult("feature resume failed", adopted.reason, finalFeatureId)
+      }
+      const metadata = {
+        plan_path: adopted.planPath,
+        mode: resume.state.mode,
+        feature_id: finalFeatureId,
+        action: finalMode === resume.state.mode && resume.state.planner_status === "usable" && resume.state.plan_review_verdict === "APPROVE" &&
+          (resume.state.mode === "LIGHT" || resume.state.mode === "FULL")
+          ? "resume-approved-plan"
+          : "resume",
+        source_session_id: resume.sessionId,
+      }
+      return {
+        title: `classify: resumed ${finalFeatureId}`,
+        output: JSON.stringify(metadata, null, 2),
+        metadata,
+      }
+    }
+  }
+
+  const resumedMetadata = transition.action === "noop"
+    ? resumedApprovedPlanMetadata(context.directory, finalFeatureId, prior)
+    : null
+  if (resumedMetadata) {
+    return {
+      title: `classify: resumed ${finalFeatureId}`,
+      output: JSON.stringify(resumedMetadata, null, 2),
+      metadata: resumedMetadata,
+    }
+  }
 
   const built = buildClassifyStub({
     mode: finalMode,
