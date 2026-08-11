@@ -34,11 +34,12 @@ Detect the mode **first**; it changes whether you may ask questions or wait for 
 
 - **INTERACTIVE (local):** an operator is present. Clarifying questions and the human veto (Step 4) are available.
 - **Autonomy directive — AUTONOMOUS (local):** the operator is present but explicitly says to proceed autonomously — for example
-  "sem parar", "sem me perguntar", "siga autonomamente", or "siga a implementacao". The native
-  autonomy controller persists `autonomy_directive: enabled` in session gate-state from the operator
-  message itself; retain it in the runtime spec/decision ledger too. Do not ask about engineering. The **only** permitted
+  "sem parar", "sem me perguntar", "siga autonomamente", or "siga a implementacao". This delegates
+  engineering to the current model only: OpenCode does not inject a continuation or re-open an idle
+  session. Do not ask about engineering. The **only** permitted
   question is an unresolved choice that changes the observable product behavior or contract. This is not
-  HEADLESS: communicate progress normally, but do not wait for a reply.
+  HEADLESS: acknowledge the start once if useful, but do not emit intermediate status between lawful
+  actions or wait for a reply.
 - **HEADLESS:** no operator is reachable. Active when **any** of:
   - the trigger prompt says to run **autonomously** / VPS cron / "without asking questions" (the cron dispatcher always prepends this fixed prefix)
   - env `$HARNESS_OBSERVABILITY_RUN_PATH` is set (VPS mid-run outbox)
@@ -182,7 +183,7 @@ This writes the plan stub + gate-state stamps that entry-gate / plan-gate consum
 
 | Mode | Action |
 |---|---|
-| **QUICK** | Inline fix or craft (Step 2.1). Cheap rails + commit via `oc-committing-changes`. **No** full `oc-orchestrating-delivery`. Prefer writing the fix via a single `executor-*` only after a **full** plan exists if plan-gate is armed — for true 1-file QUICK, implement without executor hand if build may write; otherwise one executor after a minimal full plan. |
+| **QUICK** | `build` edits the fix directly itself (or routes to the artisan skill for craft, Step 2.1) — **no plan, no `executor-*` dispatch**. `entry-gate` hard-blocks any executor/sniper dispatch while mode is QUICK ("mode 'QUICK' forbids executor-low — classify LIGHT or FULL BEFORE dispatching any delivery agent"), so a direct `build` edit (it holds `edit: allow`) is QUICK's only legal path — see `build.md`'s QUICK exception. Cheap rails + commit via `oc-committing-changes`. **No** `oc-orchestrating-delivery`, no brainstorming, no full loop. |
 | **LIGHT** | Load `oc-brainstorming` (HEADLESS branch if headless), then `oc-orchestrating-delivery` LIGHT. |
 | **FULL** | Load `oc-brainstorming` (HEADLESS branch if headless), then `oc-orchestrating-delivery` FULL. |
 
