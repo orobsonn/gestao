@@ -29,7 +29,7 @@ import {
   buildRunRecord,
   OUTCOME,
 } from "./dispatch-hand.mjs";
-import { captureResult, realGit, realTestRunner } from "./capture-hand.mjs";
+import { captureResult, realGit, realTestRunner, snapshotMainWorktree } from "./capture-hand.mjs";
 import { resolveHookCommand } from "./hand-config/resolve-hook-command.mjs";
 import { isSafeFeatureId } from "../../../hooks/lib/gate-lib.mjs";
 import { resolveRunnerAdapter, DEFAULT_RUNNER_ID } from "./runner-adapters.mjs";
@@ -455,6 +455,11 @@ function defaultSnapshotUntracked() {
   return g.hashObject(g.lsFilesAllOthers());
 }
 
+/** @description Optional bounded attribution snapshot for the distinct primary worktree (#470). */
+function defaultSnapshotMainWorktree() {
+  return snapshotMainWorktree();
+}
+
 /**
  * @description Default run-record writer: persists the token-free record to a state path keyed
  * by feature_id/task_id (the producer of the on-disk evidence consumed by Part B). The directory
@@ -467,7 +472,7 @@ function defaultWriteRecord(path, content) {
 
 /**
  * @description Default consecutive-429 streak reader — reads the persisted counter file
- * keyed by feature_id/task_id. Returns null when no prior streak exists or the file
+ * keyed by feature_id/role/task_id. Returns null when no prior streak exists or the file
  * cannot be read/parsed (best-effort — never throws).
  *
  * @param {object} descriptor
@@ -476,7 +481,7 @@ function defaultWriteRecord(path, content) {
  */
 function defaultReadStreak(descriptor, stateDir) {
   const baseDir = stateDir ?? join(process.cwd(), ".claude", "plans", ".state", "hand-429-streak");
-  const streakPath = join(baseDir, descriptor.feature_id, `${descriptor.task_id}.json`);
+  const streakPath = join(baseDir, descriptor.feature_id, descriptor.role, `${descriptor.task_id}.json`);
   return () => {
     try {
       if (!existsSync(streakPath)) return null;
@@ -494,7 +499,7 @@ function defaultReadStreak(descriptor, stateDir) {
 
 /**
  * @description Default consecutive-429 streak writer — persists the counter file keyed by
- * feature_id/task_id. Best-effort (never throws — mkdir/write failures are swallowed).
+ * feature_id/role/task_id. Best-effort (never throws — mkdir/write failures are swallowed).
  *
  * @param {object} descriptor
  * @param {string} [stateDir]
@@ -502,7 +507,7 @@ function defaultReadStreak(descriptor, stateDir) {
  */
 function defaultWriteStreak(descriptor, stateDir) {
   const baseDir = stateDir ?? join(process.cwd(), ".claude", "plans", ".state", "hand-429-streak");
-  const streakPath = join(baseDir, descriptor.feature_id, `${descriptor.task_id}.json`);
+  const streakPath = join(baseDir, descriptor.feature_id, descriptor.role, `${descriptor.task_id}.json`);
   return (streak) => {
     try {
       mkdirSync(dirname(streakPath), { recursive: true });
@@ -585,7 +590,7 @@ export function dirtyTreeRefusal(porcelain, scopePaths = []) {
  * runs the INDEPENDENT capture, then builds + persists the token-free run-record. Every external
  * seam (spawn, gitStatus, headSha, capture, env, writeRecord) is injectable for hermetic tests.
  *
- * @param {object} descriptor - { feature_id, task_id, model, brief_file, scope_paths[],
+ * @param {object} descriptor - { feature_id, task_id, role, model, brief_file, scope_paths[],
  *   locked_test, allowed_writes[], freeze_commit_sha }
  * @param {{ spawn?: Function, gitStatus?: () => string, headSha?: () => string,
  *   capture?: Function, env?: Record<string,string|undefined>,
@@ -598,6 +603,7 @@ export async function runLiveDispatch(descriptor, {
   headSha = defaultHeadSha,
   capture = defaultCapture,
   snapshotUntracked = defaultSnapshotUntracked,
+  snapshotMainWorktreeFn = defaultSnapshotMainWorktree,
   env = process.env,
   writeRecord = defaultWriteRecord,
   readStreak,
@@ -609,7 +615,7 @@ export async function runLiveDispatch(descriptor, {
   if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor)) {
     throw new Error("runLiveDispatch: descriptor must be an object");
   }
-  for (const field of REQUIRED_STRING_FIELDS) {
+  for (const field of [...REQUIRED_STRING_FIELDS, "role"]) {
     if (typeof descriptor[field] !== "string" || descriptor[field].trim() === "") {
       throw new Error(`runLiveDispatch: descriptor.${field} is required (non-empty string)`);
     }
@@ -626,6 +632,9 @@ export async function runLiveDispatch(descriptor, {
     throw new Error(
       "runLiveDispatch: descriptor.feature_id and descriptor.task_id must be safe kebab-case ids (no path separators)"
     );
+  }
+  if (descriptor.role !== "executor" && descriptor.role !== "sniper") {
+    throw new Error("runLiveDispatch: descriptor.role must be executor or sniper");
   }
 
   // Resolve streak-store seams — defaults are scoped to this descriptor's feature_id/task_id.
@@ -735,6 +744,9 @@ export async function runLiveDispatch(descriptor, {
     // dispatchHand's own dirty guard is SCOPED to scope_paths; runLiveDispatch already asserted
     // the FULL tree is clean (step 5, strictly stronger), so we forward a clean scoped probe — the
     // authoritative reconciliation is the unscoped check above, not the redundant scoped one.
+    // #470 sidecar: snapshot only at the last possible point before the synchronous hand spawn.
+    // Earlier setup (brief read, ephemeral descriptor) must never be attributed to the hand.
+    const mainWorktreeSnapshot = snapshotMainWorktreeFn();
     const child = await dispatchHand(dispatch, { spawn, env, gitStatus: () => "" });
 
     // (9) INDEPENDENT capture: re-run the frozen locked_test by path + derive touchedPaths from a
@@ -746,6 +758,7 @@ export async function runLiveDispatch(descriptor, {
       testPath: descriptor.locked_test,
       token,
       preUntracked,
+      mainWorktreeSnapshot,
     });
 
     // A post-spawn HEAD divergence (rogue commit) is a CRITICAL EXCEPTION — never stamp a record.
@@ -830,7 +843,8 @@ export async function runLiveDispatch(descriptor, {
     }
 
     const baseDir = stateDir ?? join(process.cwd(), ".claude", "plans", ".state", "hand-records");
-    const recordPath = join(baseDir, descriptor.feature_id, `${descriptor.task_id}.json`);
+    record.role = descriptor.role;
+    const recordPath = join(baseDir, descriptor.feature_id, descriptor.role, `${descriptor.task_id}.json`);
     writeRecord(recordPath, JSON.stringify(record, null, 2));
 
     return { record, outcome: record.outcome, captured: captured.captured === true, recordPath };

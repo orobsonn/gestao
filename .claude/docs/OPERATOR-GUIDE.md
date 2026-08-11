@@ -260,7 +260,7 @@ Diga o objetivo em linguagem de produto — a triagem carrega a skill certa se o
 # última release
 gh release view --repo orobsonn/claude-harness --json tagName -q .tagName
 
-npx -y "github:orobsonn/claude-harness#<tag>" init --target claude
+npx --yes --package=github:orobsonn/claude-harness#<tag> claude-harness init --target claude
 ```
 
 - Detecta install vs update pela presença do instalador vendored / `.claude/.harness-version`.
@@ -282,7 +282,7 @@ npx -y "github:orobsonn/claude-harness#<tag>" init --target claude
 | Contexto curado da run | `.claude/plans/<feature_id>/shared_context.md` |
 | Estado dos portões | `.claude/plans/.state/<session_id>/gate-state.json` |
 | Registro da triagem | `.claude/plans/.state/<session_id>/triage.json` |
-| Prova da mão (run-record) | `.claude/plans/.state/hand-records/<feature_id>/<task_id>.json` |
+| Prova da mão (run-record) | `.claude/plans/.state/hand-records/<feature_id>/<role>/<task_id>.json` |
 | Achados da run | `findings.md` na raiz (some no harvest) |
 | Memória durável | `.claude/memory/` (índice em `MEMORY.md`) |
 | **Glossário do domínio** | **`CONTEXT.md` na raiz do projeto** (commitado) |

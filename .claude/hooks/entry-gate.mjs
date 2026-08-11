@@ -67,6 +67,7 @@ import {
 } from "../shared/lib/regate-classify.mjs";
 import { computeGitState } from "../shared/lib/git-state.mjs";
 import { checkRealFileCaptureRail as sharedCheckRealFileCaptureRail } from "../shared/lib/real-file-capture-rail.mjs";
+import { decideMergeChecks, isGhPrMergeCommand, mergeTargetFromCommand } from "../shared/lib/merge-check-gate.mjs";
 
 export { classifyRegatePending, computeGitState };
 
@@ -321,6 +322,20 @@ function defaultGitState() {
   }
 }
 
+/** @description One direct GitHub read; the shared policy denies absent evidence. */
+function defaultMergeCheckRollup(target, cwd) {
+  try {
+    const output = execFileSync(
+      "gh",
+      ["pr", "view", ...(target === null ? [] : [target]), "--json", "statusCheckRollup"],
+      { cwd: typeof cwd === "string" ? cwd : process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15000 },
+    );
+    return JSON.parse(output)?.statusCheckRollup;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Issue-form advisory — adviseIssueForm (pure, exported for tests)
 // ---------------------------------------------------------------------------
@@ -395,7 +410,7 @@ export function adviseIssueForm(command, cwd, existsFn = defaultIssueFormExists)
  *         | { allow: true, hookSpecificOutput: { hookEventName: string, additionalContext: string } }
  *         | { allow: false, hookSpecificOutput: { hookEventName: string, permissionDecision: string, permissionDecisionReason: string } }}
  */
-function decideBash(payload, { readGateStateFn, gitStateFn, readDescriptorFn, adviseIssueFormFn, isAncestorFn, listHandRecordsForFeatureFn }) {
+function decideBash(payload, { readGateStateFn, gitStateFn, readDescriptorFn, adviseIssueFormFn, isAncestorFn, listHandRecordsForFeatureFn, readMergeCheckRollupFn }) {
   const command = payload?.tool_input?.command;
   // Non-string command → infra error → fail-open
   if (typeof command !== "string") {
@@ -564,6 +579,23 @@ function decideBash(payload, { readGateStateFn, gitStateFn, readDescriptorFn, ad
     return { allow: true };
   }
 
+  if (isGhPrMergeCommand(command)) {
+    const target = mergeTargetFromCommand(command);
+    const checkDecision = target === undefined
+      ? { ok: false, reason: "PR target is ambiguous; merge is denied." }
+      : decideMergeChecks(readMergeCheckRollupFn(target));
+    if (!checkDecision.ok) {
+      return {
+        allow: false,
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: `[entry-gate] Blocked: ${checkDecision.reason}`,
+        },
+      };
+    }
+  }
+
   // Branch/commit rail — a delivery command must run from a feature branch with committed work,
   // never from protected main/master and never with zero commits ahead of base. The gitStateFn
   // seam's decide()-level default is a no-op (() => null), so unit callers are unaffected; the
@@ -730,6 +762,8 @@ export function decide(payload, deps = {}) {
     // explicitly opt in via deps.
     isAncestorFn = () => null,
     listHandRecordsForFeatureFn = () => [],
+    // Inert for direct unit callers. processInput injects the one real GH read below.
+    readMergeCheckRollupFn = () => null,
   } = deps;
 
   // Non-object payload → infra error → fail-open
@@ -775,7 +809,7 @@ export function decide(payload, deps = {}) {
   // test first). The advisory nudges toward the harness issue form on bare `gh issue create`.
   const adviseIssueFormFn = (cmd, cwd) => adviseIssueForm(cmd, cwd, issueFormExistsFn);
   if (payload.tool_name === "Bash") {
-    return decideBash(payload, { readGateStateFn, gitStateFn, readDescriptorFn, adviseIssueFormFn, isAncestorFn, listHandRecordsForFeatureFn });
+    return decideBash(payload, { readGateStateFn, gitStateFn, readDescriptorFn, adviseIssueFormFn, isAncestorFn, listHandRecordsForFeatureFn, readMergeCheckRollupFn });
   }
 
   // Step 1: agent_id present → subagent context, always allow (no state pollution)
@@ -1022,13 +1056,15 @@ export function decide(payload, deps = {}) {
   // is only the legit K=1 escalation/transcription fallback. Per-task binding from the Agent
   // prompt prose is infeasible (untrustworthy string-match), so the binding is session-level —
   // BUT the unlock belt is NOT the ticket alone. The escalation_fallback ticket NAMES the in-flight
-  // task(s); the real, NON-FORGEABLE belt is the on-disk run-record (written by runLiveDispatch's
+  // task(s); the durable belt is the on-disk run-record (written by runLiveDispatch's
   // INDEPENDENT capture): the Claude hand escape is authorized ONLY when a ticketed task's record
   // shows outcome === FAILED — a genuine spawn that ran and failed its locked test/exit. A
   // PRE-SPAWN CONFIG ERROR (no token, dirty baseline, gate not armed) writes NO such record, so the
   // escape is DENIED → the orchestrator must route to the critical-exception path, never a silent
   // Claude fallback. This removes the old "any non-empty escalation_fallback array unlocks"
-  // looseness (an echo-forgeable ticket could fake it). Runs AFTER Gate 1 so a hand WITHOUT triage
+  // looseness (an echo-forgeable ticket could fake it). This proves a real producer path only
+  // against accidental omission; same-user Bash can still forge files, so it is not OS provenance.
+  // Runs AFTER Gate 1 so a hand WITHOUT triage
   // still hits the triage deny first.
   if (HAND_ROLES.has(role)) {
     // test-author is dispatched as a main-loop Claude Agent in BOTH local and headless. It is the
@@ -1107,7 +1143,9 @@ export function decide(payload, deps = {}) {
     const authorized = tickets.some((qualifiedId) => {
       let record = null;
       try {
-        record = readHandRecordFn(qualifiedId);
+        // The K=1 ticket is role-specific: a sniper failure must never authorize an
+        // executor fallback for the same task (and vice versa).
+        record = readHandRecordFn(qualifiedId, role);
       } catch {
         record = null;
       }
@@ -1196,6 +1234,7 @@ export function processInput(rawStr, deps = {}) {
       issueFormExistsFn: defaultIssueFormExists,
       isAncestorFn: defaultIsAncestor,
       listHandRecordsForFeatureFn: listHandRecordsForFeature,
+      readMergeCheckRollupFn: (target) => defaultMergeCheckRollup(target, payload?.cwd),
       ...deps,
     });
   } catch {
