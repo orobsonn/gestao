@@ -429,7 +429,6 @@ export function harnessOcPluginFiles() {
     "./.opencode/plugin/obs-eye.ts",
     "./.opencode/plugin/obs-hand.ts",
     "./.opencode/plugin/agent-idle-nudge.ts",
-    "./.opencode/plugin/autonomy-controller.ts",
   ];
 }
 
@@ -482,6 +481,141 @@ export function pluginsAreRelative(plugins) {
   });
 }
 
+/** @description Advance past one strict JSON string starting at its opening quote. */
+function jsonStringEnd(source, start) {
+  if (source[start] !== '"') return -1;
+  for (let index = start + 1; index < source.length; index += 1) {
+    if (source[index] === "\\") {
+      index += 1;
+      continue;
+    }
+    if (source[index] === '"') return index + 1;
+  }
+  return -1;
+}
+
+/** @description Advance past one strict JSON value without interpreting nested object keys. */
+function jsonValueEnd(source, start) {
+  const first = source[start];
+  if (first === '"') return jsonStringEnd(source, start);
+
+  if (first === "{" || first === "[") {
+    const stack = [first === "{" ? "}" : "]"];
+    for (let index = start + 1; index < source.length; index += 1) {
+      const char = source[index];
+      if (char === '"') {
+        const end = jsonStringEnd(source, index);
+        if (end < 0) return -1;
+        index = end - 1;
+        continue;
+      }
+      if (char === "{") stack.push("}");
+      else if (char === "[") stack.push("]");
+      else if (char === "}" || char === "]") {
+        if (stack.pop() !== char) return -1;
+        if (stack.length === 0) return index + 1;
+      }
+    }
+    return -1;
+  }
+
+  let end = start;
+  while (end < source.length && !/[\s,}\]]/.test(source[end])) end += 1;
+  return end === start ? -1 : end;
+}
+
+/** @description Return strict JSON root-object value spans, or null when the raw layout is unsupported. */
+function topLevelJsonValueSpans(source) {
+  const whitespace = /\s/;
+  const skipWhitespace = (index) => {
+    let next = index;
+    while (next < source.length && whitespace.test(source[next])) next += 1;
+    return next;
+  };
+
+  let index = skipWhitespace(0);
+  if (source[index] !== "{") return null;
+  index = skipWhitespace(index + 1);
+  const spans = new Map();
+
+  while (source[index] !== "}") {
+    const keyEnd = jsonStringEnd(source, index);
+    if (keyEnd < 0) return null;
+    let key;
+    try {
+      key = JSON.parse(source.slice(index, keyEnd));
+    } catch {
+      return null;
+    }
+    if (typeof key !== "string" || spans.has(key)) return null;
+
+    index = skipWhitespace(keyEnd);
+    if (source[index] !== ":") return null;
+    const valueStart = skipWhitespace(index + 1);
+    const valueEnd = jsonValueEnd(source, valueStart);
+    if (valueEnd < 0) return null;
+    spans.set(key, { start: valueStart, end: valueEnd });
+
+    index = skipWhitespace(valueEnd);
+    if (source[index] === ",") {
+      index = skipWhitespace(index + 1);
+      continue;
+    }
+    if (source[index] !== "}") return null;
+  }
+
+  return skipWhitespace(index + 1) === source.length ? spans : null;
+}
+
+/** @description Leading indentation of the line containing `index`, retained for a replaced JSON value. */
+function lineIndentationAt(source, index) {
+  const lineStart = source.lastIndexOf("\n", index - 1) + 1;
+  const prefix = source.slice(lineStart, index);
+  const match = prefix.match(/^[\t ]*/);
+  return match ? match[0] : "";
+}
+
+/** @description Stable JSON comparison for a JSON value, including its property order. */
+function sameJsonValue(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/**
+ * @description Preserve raw project formatting while replacing only harness-owned top-level
+ * `plugin` / `permission` values. Null means a conservative canonical rewrite is required.
+ */
+function preserveProjectConfigFormatting(existingRaw, originalConfig, migratedConfig) {
+  const originalKeys = Object.keys(originalConfig);
+  const migratedKeys = Object.keys(migratedConfig);
+  const keys = new Set([...originalKeys, ...migratedKeys]);
+  const changedKeys = [...keys].filter((key) => !sameJsonValue(originalConfig[key], migratedConfig[key]));
+  if (changedKeys.length === 0 || changedKeys.some((key) => key !== "plugin" && key !== "permission")) return null;
+
+  const spans = topLevelJsonValueSpans(existingRaw);
+  if (!spans || changedKeys.some((key) => !spans.has(key))) return null;
+
+  const newline = existingRaw.includes("\r\n") ? "\r\n" : "\n";
+  const replacements = changedKeys
+    .map((key) => {
+      const span = spans.get(key);
+      const indentation = lineIndentationAt(existingRaw, span.start);
+      const value = JSON.stringify(migratedConfig[key], null, 2).replace(/\n/g, `${newline}${indentation}`);
+      return { ...span, value };
+    })
+    .sort((left, right) => right.start - left.start);
+
+  let candidate = existingRaw;
+  for (const replacement of replacements) {
+    candidate = `${candidate.slice(0, replacement.start)}${replacement.value}${candidate.slice(replacement.end)}`;
+  }
+
+  try {
+    return sameJsonValue(JSON.parse(candidate), migratedConfig) ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * @description Create or idempotently merge canonical plugins into a valid project-owned opencode.json.
  * Also migrates the `permission` block across harness generations (issue #479): a manifest sidecar
@@ -497,7 +631,9 @@ export function pluginsAreRelative(plugins) {
  * Issue #441: when an existing file needs no semantic mutation (plugin[] already clean of harness
  * autoload paths AND permission migration is a no-op including key order), skip the write entirely
  * and return `"unchanged"` so project formatters (Biome/Prettier) are not destroyed by a cosmetic
- * `JSON.stringify(..., null, 2)` rewrite. Real mutations still rewrite with the canonical indent.
+ * `JSON.stringify(..., null, 2)` rewrite. For a real plugin/permission migration, preserve the raw
+ * project fields and replace only those two harness-owned root values; unsupported layouts safely
+ * fall back to canonical JSON.
  * @param {string} openCodeDir - source core/opencode
  * @param {string} targetDir - project root
  * @param {string} [version] - harness version currently being vendored (stamped into the manifest)
@@ -590,7 +726,11 @@ export function writeOpencodeConfig(openCodeDir, targetDir, version) {
   const removedEntries = migrated.report.filter((r) => r.action === "removed-retired");
   const keptEntries = migrated.report.filter((r) => r.action === "kept-custom");
 
-  const nextConfigText = `${JSON.stringify(migrated.config, null, 2)}\n`;
+  const canonicalConfigText = `${JSON.stringify(migrated.config, null, 2)}\n`;
+  const nextConfigText =
+    wasPresent && originalSnapshot !== null && existingRaw !== null
+      ? preserveProjectConfigFormatting(existingRaw, originalSnapshot, migrated.config) ?? canonicalConfigText
+      : canonicalConfigText;
   const nextManifestText = `${JSON.stringify(migrated.manifest, null, 2)}\n`;
 
   // #441: skip rewriting opencode.json when nothing semantic changed — including permission key
@@ -600,7 +740,7 @@ export function writeOpencodeConfig(openCodeDir, targetDir, version) {
     wasPresent &&
     originalSnapshot !== null &&
     existingRaw !== null &&
-    (existingRaw === nextConfigText ||
+    (existingRaw === canonicalConfigText ||
       JSON.stringify(originalSnapshot) === JSON.stringify(migrated.config));
   const manifestUnchanged = existingManifestRaw !== null && existingManifestRaw === nextManifestText;
 
@@ -820,7 +960,79 @@ export function preflightOpenCodeVendor(coreDir, targetDir) {
   for (const [, destination] of REPO_FILES) entries.push({ destination, kind: "file" });
 
   for (const entry of entries) preflightDestination(targetReal, entry.destination, entry.kind);
-  return { targetReal, openCodeDir };
+  return { targetReal, openCodeDir, entries };
+}
+
+/** @description Writes exact current ownership plus the finite vendor retirement ledger. */
+function writeOcOwnershipManifest(ocDir, entries, sourceOcDir) {
+  const files = new Set(
+    entries
+      .filter((entry) => entry.kind === "file" && entry.destination.startsWith(join(".opencode", sep)))
+      .map((entry) => entry.destination.split(sep).join("/")),
+  );
+  for (const path of [
+    ".opencode/.gitignore",
+    ".opencode/.harness-version",
+    ".opencode/.harness-config-manifest.json",
+    ".opencode/.harness-owned-files.json",
+    ".opencode/AGENTS.md",
+    ".opencode/harness.routing.json",
+    "opencode.json",
+    "AGENTS.md",
+    "harness.routing.json",
+    ".github/ISSUE_TEMPLATE/harness-task.yml",
+    ".dev.vars.example",
+  ]) files.add(path);
+  const retired = OC_RETIRED_FILES
+    .filter((rel) => !existsWithExactCase(dirname(join(sourceOcDir, rel)), rel.split("/").pop()))
+    .map((rel) => `.opencode/${rel}`);
+  writeFileSync(
+    join(ocDir, ".harness-owned-files.json"),
+    `${JSON.stringify({ version: 1, files: [...files].sort(), retired }, null, 2)}\n`,
+  );
+}
+
+/**
+ * @description Writes the exact Claude files produced by this vendor run. The lifecycle shipper
+ * consumes this list instead of a directory prefix, so a project's local `.claude/` cargo never
+ * enters the harness PR.
+ * @param {{ coreDir: string, claudeCodeDir: string, claudeDir: string, hookVpsDeps: string[], modules: string[] }} options
+ */
+function writeClaudeOwnershipManifest({ coreDir, claudeCodeDir, claudeDir, hookVpsDeps, modules }) {
+  const entries = [];
+  for (const dir of FRAMEWORK_OWNED) {
+    const src = join(claudeCodeDir, dir);
+    if (existsSync(src)) collectDestinationTree(src, join(".claude", dir), entries);
+  }
+  for (const file of FRAMEWORK_FILES) {
+    const src = join(claudeCodeDir, file);
+    if (existsSync(src)) entries.push({ destination: join(".claude", file), kind: "file" });
+  }
+  const sharedDir = join(coreDir, "shared");
+  if (existsSync(sharedDir)) collectDestinationTree(sharedDir, join(".claude", "shared"), entries);
+  for (const name of hookVpsDeps) entries.push({ destination: join(".claude", "vps", name), kind: "file" });
+  const modulesRoot = join(coreDir, "..", "modules");
+  for (const name of modules) {
+    const src = join(modulesRoot, name);
+    if (existsSync(src)) collectDestinationTree(src, join(".claude", "modules", name), entries);
+  }
+
+  const files = new Set(
+    entries
+      .filter((entry) => entry.kind === "file")
+      .map((entry) => entry.destination.split(sep).join("/")),
+  );
+  for (const path of [
+    ".claude/.gitignore",
+    ".claude/.harness-version",
+    ".claude/.harness-config-manifest.json",
+    ".claude/.harness-owned-files.json",
+    ".claude/CLAUDE.md",
+    ".claude/settings.json",
+    ".github/ISSUE_TEMPLATE/harness-task.yml",
+    ".dev.vars.example",
+  ]) files.add(path);
+  writeFileSync(join(claudeDir, ".harness-owned-files.json"), `${JSON.stringify({ version: 1, files: [...files].sort() }, null, 2)}\n`);
 }
 
 /**
@@ -903,6 +1115,8 @@ export const OC_RETIRED_FILES = [
   "skills/orchestrating-delivery/skill-regate-deadlock-escape.test.mjs",
   "plugin/harvest-guard.ts",
   "plugin/lib/harvest-findings.mjs",
+  "plugin/autonomy-controller.ts",
+  "plugin/lib/autonomy-controller.mjs",
   "plugin/lib/agent-catalog-health.mjs",
   "plugin/lib/ceremony-binding.mjs",
   "plugin/lib/ceremony-transition.mjs",
@@ -995,6 +1209,7 @@ export function vendorOpenCode({ coreDir, targetDir, version, stampDate }) {
 
   const gi = mergeOcGitignore(ocDir);
   writeFileSync(join(ocDir, ".harness-version"), `${version}\nvendored_at: ${stampDate}\n`);
+  writeOcOwnershipManifest(ocDir, preflight.entries, openCodeDir);
   ok(`.opencode/.gitignore (${gi}), .harness-version written`);
 
   const repoFiles = installRepoFiles(coreDir, targetDir);
@@ -1027,10 +1242,10 @@ function vendorClaude({ coreDir, claudeCodeDir, targetDir, version, stampDate, w
   ok(`shared import rewrites: ${sharedRewrites}`);
 
   const hookVpsDeps = copyHookVpsDeps(coreDir, claudeDir, claudeCodeDir);
-  ok(`hooks' vps deps → .claude/vps/: ${hookVpsDeps}`);
+  ok(`hooks' vps deps → .claude/vps/: ${hookVpsDeps.length ? hookVpsDeps.join(", ") : "none (hooks import no vps modules)"}`);
 
   const modules = copyModules(join(coreDir, "..", "modules"), claudeDir, Boolean(withCodex));
-  ok(`modules: ${modules}`);
+  ok(`modules: ${modules.length ? modules.join(", ") : "none (default off; pass --with-codex to enable)"}`);
 
   seedAccumulated(claudeCodeDir, claudeDir);
   ok("memory/MEMORY.md, kaizen.md seeded (if absent)");
@@ -1065,12 +1280,19 @@ function vendorClaude({ coreDir, claudeCodeDir, targetDir, version, stampDate, w
 
   const claudeGitignore = mergeClaudeGitignore(claudeDir);
   writeFileSync(join(claudeDir, ".harness-version"), `${version}\nvendored_at: ${stampDate}\n`);
+  writeClaudeOwnershipManifest({ coreDir, claudeCodeDir, claudeDir, hookVpsDeps, modules });
   ok(`.claude/.gitignore (${claudeGitignore}), .harness-version written`);
   return { claudeDir };
 }
 
-/** @description Best-effort version string from git, else "unknown". */
+/** @description Release version from package.json, with git/unknown only as a legacy fallback. */
 function readVersion(repoDir) {
+  try {
+    const version = JSON.parse(readFileSync(join(repoDir, "package.json"), "utf8"))?.version;
+    if (typeof version === "string" && version.trim()) return `v${version.trim()}`;
+  } catch {
+    // A legacy/minimal source can lack package.json; retain the previous best-effort path.
+  }
   try {
     return execFileSync("git", ["-C", repoDir, "describe", "--tags", "--always"], {
       stdio: ["ignore", "pipe", "ignore"],
@@ -1192,7 +1414,7 @@ function rewriteClaudeSharedImports(claudeDir) {
  */
 function copyHookVpsDeps(coreDir, claudeDir, claudeCodeDir = coreDir) {
   const hooksDir = join(claudeCodeDir, "hooks");
-  if (!existsSync(hooksDir)) return "none (no hooks/)";
+  if (!existsSync(hooksDir)) return [];
   const VPS_IMPORT = /from\s+['"]\.\.\/vps\/([\w.-]+\.mjs)['"]/g;
   const SIBLING_IMPORT = /from\s+['"]\.\/([\w.-]+\.mjs)['"]/g;
 
@@ -1222,7 +1444,7 @@ function copyHookVpsDeps(coreDir, claudeDir, claudeCodeDir = coreDir) {
     const text = readFileSync(src, "utf8");
     for (const m of text.matchAll(SIBLING_IMPORT)) queue.push(m[1]);
   }
-  return copied.length ? copied.sort().join(", ") : "none (hooks import no vps modules)";
+  return copied.sort();
 }
 
 /**
@@ -1283,7 +1505,7 @@ function copyModules(modulesRoot, claudeDir, withCodex) {
     cpSync(src, join(claudeDir, "modules", name), { recursive: true, filter });
     copied.push(name);
   }
-  return copied.length ? copied.join(", ") : "none (default off; pass --with-codex to enable)";
+  return copied;
 }
 
 /** @description Copies accumulated stores only when absent (never clobbers). */
