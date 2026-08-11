@@ -14,7 +14,7 @@ metadata:
 
 **Announce at the start (pt-br):** "Usando orchestrating-delivery para conduzir a entrega no modo <LIGHT|FULL>."
 
-Invoked by `oc-triaging-requests` for **LIGHT** and **FULL**. QUICK never reaches here (it runs inline, dispatching a single `executor-low`/`executor-medium` + gates + `shipper`).
+Invoked by `oc-triaging-requests` for **LIGHT** and **FULL**. QUICK never reaches here (it runs inline via a direct `build` edit — no dispatch — + gates + `shipper`).
 
 > ⚠️ Invalid `subagent_type` returns an **explicit error** on OC 1.17.18 — still use exact tier names; do not rely on fuzzy match. NEVER dispatch a bare `executor` or `sniper`; always the exact tiered name (`executor-low`, `executor-medium`, `executor-high`, `sniper-low`, `sniper-medium`, `sniper-high`).
 
@@ -31,20 +31,13 @@ triaging-requests  →  orchestrating-delivery (you)  →  agents (workers)
 
 The operator is a product manager, not a developer. Engineering problems are solved **inside the system** (escalate tier, retry, sniper). The human is asked **only** product decisions (§ Human checkpoints).
 
-## Autonomy directive
+## Delegated autonomy
 
 When the operator says **"sem parar"**, **"sem me perguntar"**, **"siga autonomamente"**, **"siga a
-implementacao"**, or an equivalent instruction, the native autonomy controller persists for the session
-as `autonomy_directive: enabled` in gate-state; mirror it in the feature runtime spec/decision ledger.
-On an idle non-terminal build session, that controller re-prompts the same session with its next lawful
-phase. Never answer that continuation with status prose: execute the phase. This is a live-session mode,
-distinct from HEADLESS, and replaces interactive approval waits with the same evidence gates used by HEADLESS.
-
-**Autonomy idle stop (deterministic):** once gate-state has `final_review_done: true`, the idle motor
-**does not** re-prompt. After you stamp `mark final-review`, finish autonomous demo validation, harvest,
-and authorized ship **in the same turn** before going idle. no-ceremony / QUICK never enter the multi-phase
-idle loop. If harvest/ship still need a human nudge after stop, the operator sends one follow-up — that is
-cheaper than an infinite `delivery-close` tick.
+implementacao"**, or an equivalent instruction, use the evidence gates normally and resolve engineering
+inside the approved scope. This is a prompt-level delegation, not host workflow state: OpenCode does not
+inject a continuation or re-open an idle session. The model decides whether the current turn has a lawful
+next action; it must never manufacture product intent to continue.
 
 **Question filter — apply before every question:** ask only when the available choices change the
 **observable product behavior or contract** — what a user receives, can do, or integrates against. If
@@ -58,6 +51,13 @@ repair ladders, rerun deterministic gates and a fresh virgin eye after a materia
 defect, evidence, chosen repair, and gates. Never disable a rail. Never relax a locked assertion, forge a
 marker, or use an executor to repair a frozen test — only `test-author` may do that, followed by
 fidelity and freeze again.
+
+**Turn discipline in live autonomy:** tool and subagent results are already visible progress. **Do not send
+an intermediate textual build response** between lawful actions. After every result, evaluate it internally
+and make the **next lawful tool call in the same turn**; do not say **"vou"**, **"na sequencia"**, or
+**"continuando automaticamente"** and stop. A textual response may end a turn only for final delivery, a
+genuine unresolved product decision, a formal rail block with its evidence and required authority, or an
+operator request for status.
 
 **Proportionality before escalation:** a finding is material only when evidence shows the proposed delivery
 fails an acceptance criterion, external contract, or normal supported flow; causes material likely harm in
@@ -79,8 +79,8 @@ brainstorm+spec → HARD-GATE 1 → plan (planner → validate-plan → plan-rev
 ```
 
 HARD-GATES (default interactive, pt-br, product-language): **approve spec → approve plan → test demo**.
-With `autonomy_directive: enabled`, evidence gates replace those waits; the loop is autonomous unless the
-question filter identifies an unresolved product choice.
+With live delegated autonomy or HEADLESS, evidence gates replace those waits; an unresolved product choice
+still stops the current turn.
 
 ---
 
@@ -100,8 +100,9 @@ Detect **first** (same signals as `oc-triaging-requests`):
 | HARD-GATE 3 (demo) | operator tests | auto-validate ACs; attach to PR |
 | Delivery | merge on operator OK | **draft PR only — never merge** |
 
-In **AUTONOMOUS**, use the HEADLESS column's evidence gates and the task's existing delivery authority,
-while retaining normal progress messages. Do not stop for an engineering choice.
+In **AUTONOMOUS**, use the HEADLESS column's evidence gates and the task's existing delivery authority.
+Tool and subagent outputs carry progress; do not emit intermediate build status messages. Do not stop for
+an engineering choice.
 
 **Headless golden rules:** never block on questions; never invent product decisions when the trigger is silent (stop + comment); never skip a configured optional eye; never dispatch `executor-*` until a **full** plan (not classify stub) exists and plan-gate allows.
 
@@ -186,9 +187,9 @@ After every durable phase transition, refresh the visual todo immediately. For `
 2. **Load and follow the `oc-brainstorming` skill** (INTERACTIVE, AUTONOMOUS, or HEADLESS branch). Spec must include `#uj-N`, `#ac-N.M`, constraints, and locked decisions (operator-owned in interactive; trigger-derived + explicit open risks in autonomous/headless).
 3. Write the spec file directly with the **edit** tool (`build`'s `edit` is allowed — `agents/build.md`).
    - The canonical runtime copy is `.opencode/plans/<sessionID>-<feature_id>/spec.md`. This is the spec passed to the planner; the plain persisted `brainstormed` workflow fact records completion separately.
-4. **Upfront spec-adversary (mandatory LIGHT/FULL):** identify the existing paths implicated by the spec and pass them as `scope_paths` (empty is valid only when no existing file is implicated). Dispatch `adversary` (+ optional `adversary-family-2` only when `roles.adversary.secondEyeModel` is set). The Task prompt MUST require both passes and `evidence: "file:anchor"`; use a function/exported symbol for code or a real `<section>`, `<key>`, or `<operation>` for a non-executable surface. Only a greenfield surface with no existing file is narrative N/A. It MUST follow the exact JSON schema and MUST NOT request `SHIP`/`BLOCK`, `verdict`, `mechanism`, `sweep`, `blockers`, or any extra field. Primary returns only `{ "issues": [...] }`.
+4. **Upfront spec-adversary (mandatory LIGHT/FULL):** identify the existing paths implicated by the spec and pass them as `scope_paths` (empty is valid only when no existing file is implicated). Dispatch `adversary` (+ optional `adversary-family-2` only when `roles.adversary.secondEyeModel` is set). The Task prompt MUST require both passes and `evidence: "file:anchor"`; use a function/exported symbol for code or a real `<section>`, `<key>`, or `<operation>` for a non-executable surface. Only a greenfield surface with no existing file is narrative N/A. Primary returns only `{ "issues": [...] }`; every issue has exactly `description`, `category`, `severity`, `scope`, `evidence`, and `fix_hint`. Routing derives the sniper tier from severity. Never request `SHIP`/`BLOCK`, `verdict`, `mechanism`, `sweep`, `blockers`, `suggested_sniper_tier`, or any extra field.
 
-   **Acceptance is defined, and "clean" is not the only way out.** Apply **Proportionality before escalation**. No unresolved material finding → the pass is accepted: stamp the marker and go to the plan. A material finding → revise `spec.md` so it is answered (a criterion that pins the behaviour, or an explicit locked decision that accepts it), then re-attack. A separate opportunity is recorded as a concise open risk; it does not widen the spec or reopen the pass. Under the autonomy directive, repair same-contract engineering and re-attack without asking; ask only if resolving it requires a changed product behavior. Headless records unresolved risks in `spec.md` under "Open risks", proceeds only by explicit orchestrator judgment, and includes them in the PR body for the human gate.
+   **Acceptance is defined, and "clean" is not the only way out.** Apply **Proportionality before escalation**. No unresolved material finding → the pass is accepted: stamp the marker and go to the plan. A material finding → revise `spec.md` so it is answered (a criterion that pins the behaviour, or an explicit locked decision that accepts it), then re-attack. That re-attack verifies the prior material findings and the direct consequences of their correction; it does not repeat a broad critical-class sweep or invent a new architecture. A new finding belongs only when evidence shows a concrete path breaking an acceptance criterion, locked contract, or normal supported flow. A rare hypothesis is a concise open risk and a separate opportunity; it does not widen the spec or reopen the pass. In AUTONOMOUS, repair same-contract engineering and re-attack without asking; ask only if resolving it requires a changed product behavior. Headless records unresolved risks in `spec.md` under "Open risks", proceeds only by explicit orchestrator judgment, and includes them in the PR body for the human gate.
 
 **HARD-GATE 1 — approve spec (pt-br, product-language):** present what the feature does AND surface **each locked decision in plain product terms**. **Do not show code or schema.**  
 **AUTONOMOUS / HEADLESS:** no wait — adversary clean is the gate; record the spec summary in the run evidence / PR body.
@@ -205,13 +206,19 @@ After every durable phase transition, refresh the visual todo immediately. For `
 
    **Provider recovery:** `planner-recovery` atomically claims each Task using OpenCode's `callID` plus a persisted attempt token. **You do NOT write the plan.** Only a usable planner result is persisted and bound by that plugin at the canonical path (atomic temp+rename). `plan-gate` is verification-only: it checks the already-bound snapshot. Its fail-open branch is narrow—only genuinely missing/unreadable state with no planner lifecycle; running, pending, invalid, or binding-less lifecycle states deny. A response carrying two or more distinct full plans is `plan_invalid` (fail-closed on ambiguity — never "the first one wins"), as is a plan whose `feature_id` does not match the session; in both cases the existing canonical file is left untouched. Never reuse an old plan.
 
-   Real Task rejection is observed through OpenCode's `message.part.updated` / `ToolStateError` event (not only `tool.execute.after`). Authentication, credit, timeout, provider failures, and malformed output leave the planner artifact unusable; under the autonomy directive, repair/re-dispatch through the bounded recovery ladder and continue without asking the operator. The planner lifecycle binds a result to its session, feature, and call identity; it does not keep attempt or review budgets. Until gate-state says `usable`, do not dispatch plan reviewers, test-author, executors, or snipers.
+   Real Task rejection is observed through OpenCode's `message.part.updated` / `ToolStateError` event (not only `tool.execute.after`). Authentication, credit, timeout, provider failures, and malformed output leave the planner artifact unusable; in AUTONOMOUS, repair/re-dispatch through the bounded recovery ladder and continue without asking the operator. The planner lifecycle binds a result to its session, feature, and call identity; it does not keep attempt or review budgets. Until gate-state says `usable`, do not dispatch plan reviewers, test-author, executors, or snipers.
 
 2. **CANONICAL PATH — written for you by `planner-recovery` at:**
    ```
    .opencode/plans/<sessionID>-<feature_id>/execution-plan.json
    ```
    Do **not** re-emit the plan through `cat >` / heredoc: hand-transcribing an 8 KB JSON is exactly how a run stranded itself at `plan_pending_write` with every downstream dispatch gated. The plugin overwrites any classify stub in place. `validate-plan` and `plan-reviewer` read from this exact path. If the Task metadata says the plan was refused, fix it **with the planner** — never write the file yourself.
+
+   **Resumed approved-plan recovery (narrow exception):** if a Task is refused with the exact host message **`[planner-recovery] resumed approved plan must continue delivery; do not dispatch planner`**, the host has already restored a valid canonical `APPROVE` plan for this feature. This is not a `REVISE` verdict or a product decision. Stay in the **same session**: do **not** dispatch planner, plan-reviewer, or adversary; do not open a new session; and do not change the bound plan. Re-sync the canonical state/todo, discard the incidental failed planning attempt, and dispatch the **next legal unfinished task** under that approved plan.
+
+   **Resume checkout recovery (narrow exception):** `capture_verified` proves a prior hand ran; it is not proof that a later checkout still contains every product output. Trigger this recovery only on **objective proof** tied to the same approved plan: a task's locked test/gate fails because an output required by that task is absent or contract-incompatible inside its `scope_paths`, or a current task read-back proves that a captured predecessor's required output is absent. Do not trigger from a generic suspicion or an unanchored review observation. Preserve the **same approved plan**, spec, classification, review, and decisions: do **not** dispatch planner or plan-reviewer.
+
+   First confirm the feature checkout/branch is still the intended one and that there is no **external diff** in the affected `scope_paths`. A foreign change, merged/terminal delivery, or repair that would leave the approved scopes is a real conflict: stop with its evidence, without writing over it. Otherwise recover the earliest objectively contradicted task plus its **transitive dependents**, in topological order. Reuse an existing locked test — if it exists, **do not rewrite the locked test**; run its normal fidelity/gate/executor/capture rail. Invoke `test-author` only when that task's locked test itself is missing or incompatible. This is an engineering repair, not a product question: continue the same session and never open a new one. If the **same proof fails again** after this recovery, stop with `recovery_failed` evidence rather than retrying or expanding the plan.
 
 3. Run the **`validate-plan` tool** on that file — a deterministic **structural** gate. On FAIL, hand its error list to `planner` and re-plan. If a product decision is needed to resolve the issue, ask the operator; no OpenCode runtime counter decides that checkpoint.
 
@@ -260,7 +267,7 @@ In LIGHT mode, before the first task, dispatch `adversary` **VIRGIN** against th
 
 ### Adversary re-dispatch (post-sniper re-gate)
 
-After a material fix, use a fresh adversary pass when the changed surface needs independent review. A clean review (only low findings or none) may stamp `regate-passed`; a red-to-green frozen test may justify the same stamp for a localized fix. Under the autonomy directive, a material finding is repaired through the bounded ladder and re-gated; do not ask the operator unless the only remaining repair changes product behavior. OpenCode does not maintain numeric convergence tracking, a retry tally, or a persisted terminal outcome for this decision.
+After a material fix, use a fresh adversary pass when the changed surface needs independent review. A clean review (only low findings or none) may stamp `regate-passed`; a red-to-green frozen test may justify the same stamp for a localized fix. In AUTONOMOUS, a material finding is repaired through the bounded ladder and re-gated; do not ask the operator unless the only remaining repair changes product behavior. OpenCode does not maintain numeric convergence tracking, a retry tally, or a persisted terminal outcome for this decision.
 
 Never hand-edit or delete `gate-state.json` to unblock a rail. An accepted risk is recorded before the native `regate-passed` marker is used for that task; a rejected or unresolved risk leaves the rail armed.
 
@@ -276,7 +283,7 @@ Initialize `.opencode/plans/<sessionID>-<feature_id>/shared_context.md` **via ba
 | a′ | Locked test + fidelity (when rail applies) | Dispatch `test-author` first (fidelity-**exempt** — it produces the locked test). Then dispatch `compliance` in **fidelity mode** (pre-freeze: full-observable fidelity only, no green required). On fidelity **FAIL** (`partial` counts as FAIL), re-dispatch the same `test-author` with the feedback — **at most 2 `test-author` dispatches per `test_path`** in this pre-freeze gate (initial + exactly one re-dispatch; this is a fidelity-only rule, never a general retry authority). A provider/transient Task failure follows the bounded recovery ladder without asking the operator. On fidelity **PASS** — stamp disk marker **before** any executor spawn (see Fidelity-rail stamp below). Freeze the locked test, then proceed to implement. A further fidelity failure escalates the transcription to a stronger hand (see "Test-author fidelity escalation" right after this table). |
 | b | Implement | Dispatch `executor-<tier>` via Task / `run-hand` with curated L0–L4 context. **Precondition:** `fidelity_pass` stamped for this feature/task (executor spawn returns `CONFIG_ERROR` if missing). Reads back `DONE \| DONE_WITH_CONCERNS \| NEEDS_CONTEXT \| BLOCKED`. `NEEDS_CONTEXT` → resolve missing engineering context, repair the rail, or re-plan; ask only if the missing judgment changes product behavior. |
 | c | Compliance | Dispatch `compliance` (read-only, bash allow) with **diff + ACs + locked_tests only** — NOT shared_context, NOT adversary findings. Reads back `pass \| partial \| fail`. |
-| d | Adversary (if `task.adversarial.enabled`) | Dispatch `adversary` **VIRGIN**, then attempt `adversary-family-2` only when `roles.adversary.secondEyeModel` is set — no prior verdicts, no compliance output, no shared_context — with task spec + `adversarial.focus` + diff. Every brief MUST require both passes and repo-relative `evidence: "file:anchor"`, using a function/exported symbol for code or a real `<section>`, `<key>`, or `<operation>` for a non-executable surface. Require each agent's exact JSON schema; never ask for verdict/sweep/mechanism fields. Zero findings is a **VALID result — never re-dispatch to hit a count**. A missing, malformed, or unanchored primary report is **NOT a pass — halt and escalate**. |
+| d | Adversary (if `task.adversarial.enabled`) | Dispatch `adversary` **VIRGIN**, then attempt `adversary-family-2` only when `roles.adversary.secondEyeModel` is set — no prior verdicts, no compliance output, no shared_context — with task spec + `adversarial.focus` + diff. Every brief MUST require both passes and repo-relative `evidence: "file:anchor"`, using a function/exported symbol for code or a real `<section>`, `<key>`, or `<operation>` for a non-executable surface. Primary issues use exactly `description`, `category`, `severity`, `scope`, `evidence`, and `fix_hint`; routing derives sniper tier from severity. Never ask for verdict/sweep/mechanism/tier fields. Zero findings is a **VALID result — never re-dispatch to hit a count**. A missing, malformed, or unanchored primary report is **NOT a pass — halt and escalate**. |
 | e | Security (conditional) | Dispatch `security` when the task touches auth/secrets/external-input/new-deps/SQL/service-entrypoint. Returns `SECURE \| UNSAFE` + issues. |
 | f | Gates (deterministic, no LLM) | For a targeted Vitest file, run it directly via bash against the exact named path (or use `verify` for the resolver lookup). Run other prescribed gates through their existing channel. Failure → issue list. |
 | g | Fix | Map issues from compliance, adversary, security, and gates to `sniper-<issue.severity>` (`max`→high). Sniper is the only fixer (`edit` allow, `bash` deny, no new files). After a material `sniper-medium` or `sniper-high` fix, the conductor calls native `mark` with `action: regate-pending` for the owning `task_id`, then re-runs the affected gates with a fresh adversary when the changed surface needs independent review. A review with no blocking findings, or a localized frozen test that demonstrably changes from red to green because of the fix, may call native `mark` with `action: regate-passed` + `task_id` + `sha` = HEAD. Under autonomy, repair an open material engineering finding and re-gate without asking. Never use a numeric retry/convergence rule to clear the rail. |
@@ -297,7 +304,7 @@ When the **compliance fidelity gate** (step a′) does not reach PASS within the
 
 **Privileged ship markers (native `mark` only — never Bash):**
 - After Phase 3 join (FULL): `action: final-review` → plain `final_review_done` workflow state (push-blocking).
-- After operator demo (FULL interactive without autonomy directive): `action: demo-done` → plain `demo_done` workflow state (push-blocking when not headless).
+- After operator demo (FULL INTERACTIVE): `action: demo-done` → plain `demo_done` workflow state (push-blocking when not headless).
 
 Do not invent alternate event type strings — only the types in `notify-telegram` FEED_ALLOWLIST.
 
@@ -374,7 +381,7 @@ Findings → tiered sniper (same rules as Phase 2, step g). Re-run gates after f
 Generate a demo script derived from the **UJs/ACs** (`demo.scenarios_from_refs`), **never from the implementation** — otherwise it is the student grading their own exam.
 - `demo.type`: `smoke` (API/CLI) · `playwright` (complex UI) · `markdown` (batch/cron).
 
-**HARD-GATE 3 — test demo (pt-br, product-language):** in default interactive mode, the operator validates the product by using the output. With the autonomy directive, auto-validate the demo artifact against ACs and proceed unless a product choice is unresolved.
+**HARD-GATE 3 — test demo (pt-br, product-language):** in default interactive mode, the operator validates the product by using the output. In AUTONOMOUS, auto-validate the demo artifact against ACs and proceed unless a product choice is unresolved.
 
 **Ship rail (FULL interactive — privileged):** after the operator validates the demo, call the native `mark` tool with `action: demo-done`. This records plain `demo_done: true` workflow state on gate-state under the marker boundary documented above. **Interactive FULL push is denied without it** (`denied_class=demo-missing`). Autonomous/headless sessions auto-validate the demo artifact against ACs and **do not** require `demo_done` for push.
 
@@ -383,7 +390,7 @@ Generate a demo script derived from the **UJs/ACs** (`demo.scenarios_from_refs`)
 ## Phase 5 — Harvest + ship
 
 - Dispatch `harvester` once: consolidates `findings.md`, routes durable learnings by blast-radius (project pattern → native MEMORY.md + index · law of one folder → that folder's nested `AGENTS.md` + root router row · global convention → kaizen proposal), then **deletes the ephemeral run buffers** — `findings.md` (project root) + `.opencode/plans/<sessionID>-<feature_id>/shared_context.md` (git is the durable audit). It owns `oc-recording-findings` / `oc-distilling-learnings` / `oc-proposing-improvements`. It never auto-writes to memory.
-- For LIGHT/FULL, dispatch `shipper` with `plan_path` equal to the `plan_path` returned by classify or the `canonical_plan_path` returned by recovery. Its brief contains exactly `Plan path (authoritative): <literal authoritative plan path>`. Pass that literal value verbatim: on resume it can name the source-plan session, so never reconstruct it from the current session id. QUICK must omit `plan_path`, because it has no plan. Delivery (branch/commit/push/PR via `shipper`) uses the delivery authority already present in the task request. The autonomy directive prevents a duplicate confirmation; it does not expand scope beyond that request. `shipper` never edits code.
+- For LIGHT/FULL, dispatch `shipper` with `plan_path` equal to the `plan_path` returned by classify or the `canonical_plan_path` returned by recovery. Its brief contains exactly `Plan path (authoritative): <literal authoritative plan path>`. Pass that literal value verbatim: on resume it can name the source-plan session, so never reconstruct it from the current session id. QUICK must omit `plan_path`, because it has no plan. Delivery (branch/commit/push/PR via `shipper`) uses the delivery authority already present in the task request. AUTONOMOUS uses that authority without a duplicate confirmation; it does not expand scope beyond that request. `shipper` never edits code.
 - **FULL ship preconditions (bash-decide):** planner entry facts + regate + capture + **final-review** + **demo when interactive**. Missing final/demo → deny with explicit `denied_class`.
 
 ---
@@ -414,7 +421,7 @@ A gate failure produces an issue list → tiered sniper (Phase 2, step g). Non-o
 
 ## Human checkpoints — product only, pt-br, product-language
 
-Without an autonomy directive, the normal spec, plan, demo, and delivery checkpoints apply. With it, the
+In INTERACTIVE, the normal spec, plan, demo, and delivery checkpoints apply. In AUTONOMOUS, the
 **only permitted question** is an unresolved decision whose alternatives change the product behavior or
 contract a user receives. Engineering — including tier escalation, retries, tests, rails, decomposition,
 infrastructure, publish/deploy already inside scope, and release mechanics — is **NEVER** delegated to

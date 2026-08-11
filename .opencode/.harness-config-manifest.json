@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "harnessVersion": "v0.55.32",
+  "harnessVersion": "v0.55.46",
   "owned": {
     "edit": {
       "*": "allow",
@@ -39,6 +39,9 @@
     "bash": {
       "*": "allow",
       "npx tsc --noEmit": "allow",
+      "npx --yes --package=github:orobsonn/claude-harness#v* claude-harness lifecycle-update --target opencode --ref v*": "allow",
+      "npx --yes --package=github:orobsonn/claude-harness#v* claude-harness lifecycle-update --target claude --ref v*": "allow",
+      "npx --yes --package=github:orobsonn/claude-harness#v* claude-harness lifecycle-update --target both --ref v*": "allow",
       "npx --yes --package=github:orobsonn/claude-harness#v* claude-harness init --target opencode": "allow",
       "npx --yes --package=github:orobsonn/claude-harness#v* claude-harness init --target claude": "allow",
       "npx --yes --package=github:orobsonn/claude-harness#v* claude-harness init --target both": "allow",
