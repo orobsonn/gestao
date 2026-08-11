@@ -29,10 +29,13 @@ permission:
   bash:
     "*": deny
     "test -f .opencode/.harness-version": allow
+    "test -f .claude/.harness-version": allow
     "echo *": allow
     "gh release view --repo orobsonn/claude-harness *": allow
     "npx --yes --package=github:orobsonn/claude-harness#v* claude-harness lifecycle-snapshot updating-harness": allow
     "npx --yes --package=github:orobsonn/claude-harness#v* claude-harness init --target opencode": allow
+    "npx --yes --package=github:orobsonn/claude-harness#v* claude-harness init --target claude": allow
+    "npx --yes --package=github:orobsonn/claude-harness#v* claude-harness init --target both": allow
     "opencode models": allow
     "opencode models *": allow
     "git status*": allow
@@ -50,6 +53,7 @@ permission:
     "git pull --ff-only": allow
     "node .opencode/tools/lifecycle-ship.mjs prepare updating-harness": allow
     "node .opencode/tools/lifecycle-ship.mjs prepare configuring-model-routing": allow
+    "node .opencode/tools/lifecycle-ship.mjs adopt updating-harness": allow
     "node .opencode/tools/lifecycle-ship.mjs snapshot updating-harness": allow
     "node .opencode/tools/lifecycle-ship.mjs snapshot configuring-model-routing": allow
     "git commit*--no-verify*": deny
