@@ -95,6 +95,20 @@ function assertOwnedOnly(paths, owned, label) {
 }
 
 /**
+ * The first OpenCode session after a vendor update still has the old plugin process in memory.
+ * It can therefore not observe a newly added no-CI exception. The bootstrap is deliberately
+ * narrower than the normal ship path: only an update commit that this helper has just verified,
+ * and only a repository with zero GitHub Actions workflows, may use the GitHub merge API.
+ * @param {{ operation: string, committedPaths: string[], owned: Set<string>, workflowCount: unknown }} input
+ */
+export function shouldBootstrapMergeWithoutCi({ operation, committedPaths, owned, workflowCount }) {
+  return operation === "updating-harness" &&
+    workflowCount === 0 &&
+    committedPaths.length > 0 &&
+    committedPaths.every((path) => owned.has(normalizedPath(path)));
+}
+
+/**
  * A completed lifecycle-only branch can be resumed. A product branch cannot, but its uncommitted
  * lifecycle update may still move safely to the default branch for an isolated commit.
  * @param {string[]} branchPaths
@@ -127,6 +141,69 @@ function defaultBranch() {
   return match[1];
 }
 
+/** @param {string[]} args */
+function gh(args) {
+  return execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+/**
+ * Finishes the one backward-compatible no-CI case without asking a stale OpenCode plugin to
+ * evaluate a merge command. GitHub remains the authority for rules, approvals and required
+ * status checks; any API denial stops the operation and leaves the PR visible.
+ * @param {{ operation: string, branch: string, lifecycleBranch: string, committedPaths: string[], owned: Set<string> }} input
+ */
+function bootstrapMergeWithoutCi({ operation, branch, lifecycleBranch, committedPaths, owned }) {
+  let repo;
+  let workflowCount;
+  try {
+    repo = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
+    workflowCount = Number(gh(["api", `repos/${repo}/actions/workflows`, "--jq", ".total_count"]));
+  } catch {
+    return null;
+  }
+  if (!shouldBootstrapMergeWithoutCi({ operation, committedPaths, owned, workflowCount })) return null;
+
+  const headSha = git(["rev-parse", "HEAD"]).trim();
+  let remote = "";
+  try {
+    remote = git(["ls-remote", "--exit-code", "origin", `refs/heads/${lifecycleBranch}`]).trim();
+  } catch {
+    // A just-created lifecycle branch is expected not to exist on origin yet.
+  }
+  const remoteSha = remote.split(/\s+/)[0];
+  if (remoteSha && remoteSha !== headSha) {
+    throw new Error("lifecycle bootstrap refused: remote branch SHA differs from the verified commit");
+  }
+  if (!remoteSha) git(["push", "-u", "origin", "HEAD"]);
+
+  const url = gh([
+    "pr", "create",
+    "--base", branch,
+    "--head", lifecycleBranch,
+    "--title", COMMIT_MESSAGES[operation],
+    "--body", "Lifecycle do harness. Commit verificado pelo manifesto do vendor.",
+  ]);
+  const pr = JSON.parse(gh(["pr", "view", url, "--json", "number,url,baseRefName,headRefName,headRefOid"]));
+  if (
+    !Number.isInteger(pr?.number) ||
+    pr.baseRefName !== branch ||
+    pr.headRefName !== lifecycleBranch ||
+    pr.headRefOid !== headSha
+  ) {
+    throw new Error("lifecycle bootstrap refused: PR identity differs from the verified lifecycle commit");
+  }
+
+  const result = JSON.parse(gh([
+    "api", "--method", "PUT", `repos/${repo}/pulls/${pr.number}/merge`,
+    "-f", `sha=${headSha}`,
+    "-f", "merge_method=squash",
+  ]));
+  if (result?.merged !== true) throw new Error("lifecycle bootstrap merge was not accepted by GitHub");
+  git(["switch", branch]);
+  git(["pull", "--ff-only"]);
+  return { action: "merged", branch, paths: committedPaths, url: pr.url, reason: "old-entry-gate no-CI compatibility" };
+}
+
 /** @param {string} branch */
 function existingLifecycleCommit(branch) {
   const changed = nulPaths(git(["diff", "--name-only", "-z", `origin/${branch}...HEAD`]));
@@ -140,14 +217,23 @@ function currentChangedPaths() {
   return [...new Set([...tracked, ...untracked])];
 }
 
-function ownershipManifest() {
-  const path = ".opencode/.harness-owned-files.json";
-  if (!existsSync(path)) throw new Error("missing .opencode/.harness-owned-files.json; re-run the harness update before lifecycle ship");
+const OWNERSHIP_MANIFESTS = [
+  ".opencode/.harness-owned-files.json",
+  ".claude/.harness-owned-files.json",
+];
+
+function readOwnershipManifest(path) {
   const parsed = JSON.parse(readFileSync(path, "utf8"));
   if (parsed?.version !== 1 || !Array.isArray(parsed.files) || parsed.files.some((file) => typeof file !== "string")) {
-    throw new Error("invalid .opencode/.harness-owned-files.json");
+    throw new Error(`invalid ${path}`);
   }
-  return new Set(parsed.files.map(normalizedPath));
+  return parsed.files.map(normalizedPath);
+}
+
+function ownershipManifest() {
+  const present = OWNERSHIP_MANIFESTS.filter(existsSync);
+  if (present.length === 0) throw new Error("missing harness ownership manifest; re-run the harness update before lifecycle ship");
+  return new Set(present.flatMap(readOwnershipManifest));
 }
 
 function assertTrackedCleanOwnershipManifest(operation) {
@@ -168,9 +254,18 @@ export function legacyTrackedOwnership(trackedPaths) {
 }
 
 function snapshotOwnershipManifest() {
-  const path = ".opencode/.harness-owned-files.json";
-  if (existsSync(path)) return ownershipManifest();
-  return legacyTrackedOwnership(nulPaths(git(["ls-files", "-z"])));
+  const tracked = nulPaths(git(["ls-files", "-z"]));
+  const present = OWNERSHIP_MANIFESTS.filter(existsSync);
+  if (present.length === 0) return legacyTrackedOwnership(tracked);
+  const owned = ownershipManifest();
+  // A project updated from a release before the second runtime had an exact manifest still needs
+  // protection for that shell during this one transition. The fallback sees tracked legacy paths
+  // only; untracked local cargo is never promoted to lifecycle ownership.
+  for (const path of tracked) {
+    const shell = path.startsWith(".claude/") ? ".claude" : path.startsWith(".opencode/") ? ".opencode" : null;
+    if (shell && !existsSync(`${shell}/.harness-owned-files.json`) && isLifecyclePath(path)) owned.add(path);
+  }
+  return owned;
 }
 
 /** @param {string} operation */
@@ -244,15 +339,56 @@ export function prepareLifecycleShip(operation) {
   const committed = nulPaths(git(["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD"]));
   assertOwnedOnly(committed, owned, "lifecycle commit");
   renameSync(baseline.path, `${baseline.path}.consumed`);
+  const merged = bootstrapMergeWithoutCi({ operation, branch, lifecycleBranch, committedPaths: committed, owned });
+  if (merged) return merged;
   return { action: "committed", branch: lifecycleBranch, paths: committed };
+}
+
+/**
+ * Automatic recovery for a vendor run that completed before its lifecycle snapshot. The top-level
+ * updating-harness invocation authorizes the lifecycle operation;
+ * this function contributes the narrow mechanical guarantee: stage only paths named by the
+ * vendor manifest, never any product change that happens to share the worktree.
+ * @param {"updating-harness"} operation
+ */
+export function adoptExistingLifecycleShip(operation) {
+  if (operation !== "updating-harness") throw new Error("adopt supports only updating-harness");
+  const branch = defaultBranch();
+  if (git(["rev-parse", branch]).trim() !== git(["rev-parse", `origin/${branch}`]).trim()) {
+    throw new Error(`local ${branch} is not equal to origin/${branch}; refusing to branch from local commits`);
+  }
+  const current = currentChangedPaths();
+  if (current.includes("opencode.harness.json")) {
+    throw new Error("opencode.harness.json requires manual config repair and is never lifecycle cargo");
+  }
+  const paths = selectOwnedPaths(current, ownershipManifest());
+  if (paths.length === 0) return { action: "noop", branch, paths: [] };
+
+  git(["switch", branch]);
+  git(["pull", "--ff-only"]);
+  const lifecycleBranch = `chore/harness-lifecycle-${operation}-${Date.now()}`;
+  git(["switch", "-c", lifecycleBranch]);
+  git(["add", "--", ...paths]);
+  git(["commit", "--only", "-m", COMMIT_MESSAGES[operation], "--", ...paths]);
+
+  const committed = nulPaths(git(["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD"]));
+  const owned = ownershipManifest();
+  assertOwnedOnly(committed, owned, "lifecycle commit");
+  const merged = bootstrapMergeWithoutCi({ operation, branch, lifecycleBranch, committedPaths: committed, owned });
+  if (merged) return merged;
+  return { action: "adopted", branch: lifecycleBranch, paths: committed };
 }
 
 function main() {
   const [command, operation] = process.argv.slice(2);
-  if (!(operation in COMMIT_MESSAGES) || !["snapshot", "prepare"].includes(command)) {
-    throw new Error("usage: node .opencode/tools/lifecycle-ship.mjs <snapshot|prepare> <updating-harness|configuring-model-routing>");
+  if (!(operation in COMMIT_MESSAGES) || !["snapshot", "prepare", "adopt"].includes(command)) {
+    throw new Error("usage: node .opencode/tools/lifecycle-ship.mjs <snapshot|prepare|adopt> <updating-harness|configuring-model-routing>");
   }
-  const result = command === "snapshot" ? snapshotLifecycleShip(operation) : prepareLifecycleShip(operation);
+  const result = command === "snapshot"
+    ? snapshotLifecycleShip(operation)
+    : command === "adopt"
+      ? adoptExistingLifecycleShip(operation)
+      : prepareLifecycleShip(operation);
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 

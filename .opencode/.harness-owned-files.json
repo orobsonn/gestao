@@ -50,6 +50,7 @@
     ".opencode/lib/planner-artifact.mjs",
     ".opencode/lib/planner-state.mjs",
     ".opencode/lib/roles.mjs",
+    ".opencode/lib/runtime-todo-projection.mjs",
     ".opencode/lib/task-dispatch-identity.mjs",
     ".opencode/lib/todo-projection.mjs",
     ".opencode/lib/worktree-baseline.mjs",
