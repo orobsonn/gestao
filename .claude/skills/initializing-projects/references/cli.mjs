@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
  * @description Thin CLI dispatcher for `npx claude-harness`. Two commands:
- *   - `setup-local` (alias: `init`) — vendors the harness into ./.claude on a dev machine
- *     (delegates to vendor-core.mjs).
+ *   - `setup-local` (alias: `init`) — installs a new harness locally or updates an existing
+ *     harness through the isolated lifecycle operation.
  *   - `setup-vps` — interactive wizard (setup-vps.mjs) run ON the VPS: configures the autonomous
  *     engine + Telegram notifications (token → ~/.claude/.dev.vars, then install-crons).
  * Node builtins only.
  */
 
 import { execFileSync } from "node:child_process";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realpathSync, existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -163,8 +163,9 @@ function prepareVendoredLifecycle(directory, runtimeTarget) {
 }
 
 /**
- * Ships a lifecycle-only commit that was prepared in the isolated clone. A repository with no
- * Actions workflow is explicit compatibility data, not an inference from a momentarily empty check list.
+ * Ships a lifecycle-only commit that was prepared in the isolated clone. GitHub's branch rules are
+ * the authority for any required checks; this operation must not race Actions creation by polling
+ * a transient check list in the client.
  * @param {{ directory: string, defaultBranch: string, prepared: { action: string, branch?: string, paths?: string[], url?: string } }} input
  */
 function shipPreparedLifecycle({ directory, defaultBranch, prepared }) {
@@ -190,19 +191,12 @@ function shipPreparedLifecycle({ directory, defaultBranch, prepared }) {
     throw new Error("lifecycle PR identity differs from the verified prepared commit");
   }
   const repo = ghAt(directory, ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
-  const workflowCount = Number(ghAt(directory, ["api", `repos/${repo}/actions/workflows`, "--jq", ".total_count"]));
-  if (!Number.isInteger(workflowCount) || workflowCount < 0) throw new Error("could not determine the repository workflow count");
-  if (workflowCount === 0) {
-    const result = JSON.parse(ghAt(directory, [
-      "api", "--method", "PUT", `repos/${repo}/pulls/${pr.number}/merge`,
-      "-f", `sha=${head}`,
-      "-f", "merge_method=squash",
-    ]));
-    if (result?.merged !== true) throw new Error("lifecycle merge was not accepted by GitHub");
-  } else {
-    ghAt(directory, ["pr", "checks", url, "--watch"]);
-    ghAt(directory, ["pr", "merge", url, "--squash", "--delete-branch"]);
-  }
+  const result = JSON.parse(ghAt(directory, [
+    "api", "--method", "PUT", `repos/${repo}/pulls/${pr.number}/merge`,
+    "-f", `sha=${head}`,
+    "-f", "merge_method=squash",
+  ]));
+  if (result?.merged !== true) throw new Error("lifecycle merge was not accepted by GitHub");
   gitAt(directory, ["switch", defaultBranch]);
   gitAt(directory, ["pull", "--ff-only"]);
   return { action: "merged", url: pr.url, paths: prepared.paths ?? [] };
@@ -393,51 +387,17 @@ export function runInit({ cwd, resolveTag, runVendor, withCodex = false, runtime
 }
 
 /**
- * Records the pre-vendor worktree state in .git so the newly vendored lifecycle helper can stage
- * only files that appeared during this update. This is deliberately available from the release
- * CLI: an older project cannot call a helper it has not vendored yet.
+ * Older OpenCode skills call `init` for both installation and updates. A first install still
+ * vendors in place; an existing shell must use the isolated updater so a failed write cannot leave
+ * a partially vendored checkout for the old skill to ship.
  * @param {string} cwd
- * @param {string} operation
+ * @param {"claude"|"opencode"|"both"} runtimeTarget
  */
-export function writeLifecycleSnapshot(cwd, operation) {
-  if (operation !== "updating-harness") throw new Error("lifecycle-snapshot supports only updating-harness");
-  const git = (args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-  const paths = new Set([
-    ...git(["diff", "--name-only", "-z", "HEAD"]).split("\0"),
-    ...git(["ls-files", "--others", "--exclude-standard", "-z"]).split("\0"),
-  ].filter(Boolean));
-  const manifestPath = join(cwd, ".opencode", ".harness-owned-files.json");
-  let owned;
-  try {
-    // A local/untracked manifest is data from the project, not authority. Only the last committed,
-    // clean vendor manifest may narrow the conservative legacy fallback.
-    git(["ls-files", "--error-unmatch", ".opencode/.harness-owned-files.json"]);
-    git(["diff", "--quiet", "--", ".opencode/.harness-owned-files.json"]);
-    git(["diff", "--cached", "--quiet", "--", ".opencode/.harness-owned-files.json"]);
-    const parsed = JSON.parse(readFileSync(manifestPath, "utf8"));
-    if (parsed?.version !== 1 || !Array.isArray(parsed.files) || parsed.files.some((path) => typeof path !== "string")) {
-      throw new Error("invalid ownership manifest");
-    }
-    owned = new Set(parsed.files);
-  } catch {
-    const legacyPrefixes = [
-      ".opencode/agents/", ".opencode/command/", ".opencode/docs/", ".opencode/skills/",
-      ".opencode/plugin/", ".opencode/tools/", ".opencode/hands/", ".opencode/rules/",
-      ".opencode/lib/", ".opencode/shared/",
-    ];
-    const legacyFiles = new Set([".opencode/.gitignore", ".opencode/.harness-version", ".opencode/.harness-config-manifest.json", ".opencode/AGENTS.md", ".opencode/harness.routing.json", "opencode.json", "AGENTS.md", "harness.routing.json"]);
-    const tracked = git(["ls-files", "-z"]).split("\0").filter(Boolean);
-    owned = new Set(tracked.filter((path) => legacyFiles.has(path) || legacyPrefixes.some((prefix) => path.startsWith(prefix))));
-  }
-  const dirtyOwned = [...paths].filter((path) => owned.has(path));
-  if (dirtyOwned.length > 0) {
-    throw new Error(`pre-existing tracked change in lifecycle-owned cargo: ${dirtyOwned.join(", ")}`);
-  }
-  const target = resolve(cwd, git(["rev-parse", "--git-path", `harness-lifecycle-${operation}.json`]).trim());
-  const tmp = `${target}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify({ version: 1, paths: [...paths] })}\n`, { mode: 0o600 });
-  renameSync(tmp, target);
-  return paths.size;
+export function hasInstalledHarness(cwd, runtimeTarget) {
+  const markers = runtimeTarget === "both"
+    ? [".opencode/.harness-version", ".claude/.harness-version"]
+    : [runtimeTarget === "opencode" ? ".opencode/.harness-version" : ".claude/.harness-version"];
+  return markers.some((marker) => existsSync(join(cwd, marker)));
 }
 
 /**
@@ -617,13 +577,9 @@ async function main() {
   }
 
   if (command === "lifecycle-snapshot") {
-    try {
-      const count = writeLifecycleSnapshot(process.cwd(), process.argv[3]);
-      process.stdout.write(`[claude-harness] lifecycle snapshot captured (${count} existing path(s))\n`);
-    } catch (err) {
-      process.stderr.write(`[claude-harness] ${err.message}\n`);
-      process.exit(1);
-    }
+    // Compatibility no-op for skills vendored before isolated lifecycle updates existed. The
+    // following pinned `init` command detects the existing shell and performs the whole update.
+    process.stdout.write("[claude-harness] compatibility preflight complete — run the pinned init command now.\n");
     return;
   }
 
@@ -673,6 +629,15 @@ async function main() {
     const isTTY = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
     const dim = (text) => (isTTY ? `\x1b[2m${text}\x1b[0m` : text);
     process.stdout.write(`${dim("→")} Resolving latest harness release...\n`);
+    if (hasInstalledHarness(cwd, runtimeTarget)) {
+      const tag = resolveLatestTag();
+      if (!tag) throw new Error(`claude-harness: could not resolve the latest release tag from ${SOURCE_URL}`);
+      process.stdout.write(`${isTTY ? "\x1b[32m✓\x1b[0m" : "✓"} latest release: ${tag}\n`);
+      const result = runIsolatedLifecycleUpdate({ cwd, ref: tag, runtimeTarget });
+      const url = typeof result?.url === "string" ? ` ${result.url}` : "";
+      process.stdout.write(`[claude-harness] lifecycle update ${tag}: ${result.action}.${url} Update finished; do not run lifecycle recovery or shipping commands.\n`);
+      return;
+    }
     const tag = runInit({
       cwd,
       resolveTag: () => {
