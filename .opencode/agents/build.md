@@ -47,7 +47,7 @@ CLI cheap-hand spawn uses the same exact tiered names as Task dispatch. Each sha
 3. The primary result remains authoritative. Route an adopted optional finding through the phase's normal remediation (plan-review finding → planner; adversary finding → sniper); never invent findings or wait on a failed optional eye.
 4. Every review Task prompt must defer to the selected agent's exact output schema. Never request extra fields such as `SHIP`/`BLOCK`, `verdict`, `mechanism`, `sweep`, or `blockers`; schema-invalid prose cannot become canonical evidence.
 
-Every evaluator Task brief, primary or explicitly opted-in second eye, MUST require two separate passes: internal consistency of the spec/plan/diff, then confrontation against every real file in `scope_paths` and its relevant callers/callees. Never assume another eye covers either pass.
+For an **initial** plan review, label the Task brief `Review kind: INITIAL` and require two separate passes: internal consistency of the spec/plan, then confrontation against every real file in `scope_paths` and its relevant callers/callees. Never assume another eye covers either pass. For a **re-review**, retain the prior plan in the current orchestration context, label it `Review kind: REVISION`, include the exact prior plan-review findings plus a concise structural delta from the prior plan (every changed, added, or removed task, `scope_paths`, `locked_tests`, and judgment), and direct the reviewer to verify that remediation and its direct consequences only — not to restart broad discovery.
 
 Validate every finding before accepting a report. Adversary findings require repo-relative `file:anchor` evidence; plan-reviewer findings preserve their exact schema and begin `problem` with `Evidence: file:anchor — `. The anchor is a function/exported symbol for code, or a real `<section>`, `<key>`, or `<operation>` for a non-executable surface. Missing, line-only, bare-file, prose-only, or invented anchors make the report unusable.
 
@@ -77,15 +77,15 @@ Under OpenCode, **gate-state lives only under `.opencode/`**. Never run Claude-C
 |---|---|
 | `node .claude/hooks/classify.mjs …` | native tool **`classify({ mode, feature_id })`** |
 | `node .claude/hooks/mark.mjs …` | native tool **`mark({ action })`** |
-| plans under `.claude/plans/…` | `.opencode/plans/<sessionID>-<feature_id>/` |
+| plans under `.claude/plans/…` | `.opencode/plans/<feature_id>/` |
 
 The entry-gate **denies** CC marker CLIs. If you see that deny, switch to the OC row — do not retry the CC path.
 
 ### Ordered planner entry facts
 
-For LIGHT/FULL, the approved spec is canonical at `.opencode/plans/<sessionID>-<feature_id>/spec.md`. Immediately after brainstorming approval, call native `mark({ action: "brainstormed" })`. Immediately after the required spec-adversary result is accepted, call native `mark({ action: "adversary_fired" })`. Both transitions MUST complete, in that order, before the first planner Task call.
+For LIGHT/FULL, the approved spec is canonical at `.opencode/plans/<feature_id>/spec.md`. Immediately after brainstorming approval, call native `mark({ action: "brainstormed" })`. Immediately after the required spec-adversary result is accepted, call native `mark({ action: "adversary_fired" })`. Both transitions MUST complete, in that order, before the first planner Task call.
 
-Planner dispatch remains denied until both facts are recorded for the classified feature. If `brainstormed` is missing, execute `oc-brainstorming` and then call the native mark action. If `adversary_fired` is missing, dispatch the primary `adversary` and then call the native mark action. Downstream these are plain booleans, not provenance proof; do not infer completion from prose or direct filesystem edits, and resume only the missing factual phase.
+Planner dispatch remains denied until both facts are recorded for the classified feature. If `brainstormed` is missing, execute `oc-brainstorming` and then call the native mark action. If `adversary_fired` is missing, dispatch the primary `adversary` and then call the native mark action. Downstream these are plain booleans, not provenance proof.
 
 ---
 
@@ -100,20 +100,19 @@ Your **FIRST action of the top-level session is the tool call `skill({ name: "oc
 
 **Classify once per delivery session+feature.** Call `classify` only from triaging for QUICK/LIGHT/FULL (or escalate-only up). **Never** call `classify` for no-ceremony (chat/read) — it does not pin `feature_id`. Feature-switch mid LIGHT/FULL stays denied (new session only if already in delivery). **Never** reclassify down to QUICK merely because delivery is difficult. If continuation needs a product decision, explain that impact in pt-br and wait for the operator.
 
-**Planner:** dispatch `planner` (primary model only). REVISE → re-dispatch `planner` again — never swap models. Narrow exception: if the host refuses with **`[planner-recovery] resumed approved plan must continue delivery; do not dispatch planner`**, it has restored the canonical APPROVE binding. Stay in the **same session**; do **not** dispatch planner, plan-reviewer, or adversary, and continue the **next legal unfinished task** through `oc-orchestrating-delivery`. If the host instead refuses with **`[planner-recovery] resumed bound plan awaits plan review; do not dispatch planner`**, the restored binding is intact but its legacy review verdict is missing: dispatch one `plan-reviewer` for that literal bound plan, without brainstorming, re-validating it against current routing, or re-planning. Only `REVISE` returns to planner.
-
-**Dispatch failures:** follow `oc-orchestrating-delivery`'s bounded automatic recovery. When the operator
-has given its autonomy directive, never ask about provider/tool failure, scope decomposition, or rail
-repair; only surface an unresolved decision that changes product behavior or contract.
+**Planner:** dispatch `planner` (primary model only) with the stable path
+`.opencode/plans/<feature_id>/execution-plan.json`. Planner writes and validates that file directly.
+`plan-reviewer` reads it and returns APPROVE or REVISE in the current conversation. On REVISE, give
+planner the exact findings and review the replacement. On an explicit resume request, read the named
+stable plan and durable git/files evidence; do not invoke planner or reviewer again unless requested or
+the plan is structurally invalid.
 
 **Delegated autonomy is prompt-level only.** The host never injects a continuation or re-opens an idle
 session. If the operator delegated autonomy and there is a lawful next action, take it; if an unresolved
 product decision remains, explain its impact in pt-BR and stop for the operator. Never invent product intent
 merely to keep a delivery moving.
 
-Never write product code or open a PR while `planner_status !== usable` on LIGHT/FULL — host denies `git push` / `gh pr`.
-
-**OC ship:** after a DONE Task hand, the host records completion; capture is stamped separately by native `mark` only after the parent independently inspects the read-back, diff and locked-test result. Run `git push` / `gh pr create` **yourself on this parent session** (not inside shipper Task). Shipper may only draft title/body. Specs may be edited only where the active lane permits it. The canonical execution plan is never a direct model edit: planner returns JSON and `planner-recovery` alone persists it. The `plan-write-gate` plugin still denies Write/Edit on `gate-state.json`, `triage.json`, any JSON under `.opencode/plans/.state/`, the canonical `execution-plan.json`, and the harness marker scripts (`mark.mjs`, `classify.mjs`) — those stay host/marker-only, never a direct edit.
+**OC ship:** after a DONE Task hand, the host records completion; capture is stamped separately by native `mark` only after the parent independently inspects the read-back, diff and locked-test result. Run `git push` / `gh pr create` **yourself on this parent session** (not inside shipper Task). Shipper may only draft title/body. Specs may be edited only where the active lane permits it. Only the authenticated planner may Write/Edit the stable `execution-plan.json`; the `plan-write-gate` denies every other writer and continues to protect `gate-state.json`, `triage.json`, `.opencode/plans/.state/`, and the harness marker tools.
 </HARD-GATE>
 
 Route on its result:
@@ -134,7 +133,7 @@ For **LIGHT** and **FULL**, the full delivery loop lives in the `oc-orchestratin
 skill({ name: "oc-orchestrating-delivery" })
 ```
 
-The skill owns Phases 0–5 (brainstorm + spec → plan → per-task loop → final review → demo → harvest + ship), all internal HARD-GATES, context curation (ICM layers L0–L4), and permitted file writes. The canonical plan path is `.opencode/plans/<sessionID>-<feature_id>/execution-plan.json` — the `<sessionID>-` prefix is **mandatory** — and only `planner-recovery` persists the planner's returned JSON there. NEVER restate or reimplement the loop phases here; the skill is the single source of truth.
+The skill owns Phases 0–5 (brainstorm + spec → plan → per-task loop → final review → demo → harvest + ship), all internal HARD-GATES, context curation (ICM layers L0–L4), and permitted file writes. The canonical plan path is `.opencode/plans/<feature_id>/execution-plan.json`; planner writes and validates it directly. NEVER restate or reimplement the loop phases here; the skill is the single source of truth.
 
 **Mode mapping:** triage `LIGHT`/`FULL` → full plan `mode` is lowercase `light`/`full`. Never write uppercase triage modes into a full plan.
 

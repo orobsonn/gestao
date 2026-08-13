@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "harnessVersion": "v0.55.59",
+  "harnessVersion": "v0.55.68",
   "owned": {
     "edit": {
       "*": "allow",
