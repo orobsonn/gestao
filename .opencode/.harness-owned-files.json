@@ -156,7 +156,6 @@
     ".opencode/tools/sync-harness-todo.ts",
     ".opencode/tools/validate-plan.ts",
     "AGENTS.md",
-    "harness.routing.json",
     "opencode.json"
   ],
   "retired": [
