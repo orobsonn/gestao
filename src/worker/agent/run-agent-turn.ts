@@ -136,7 +136,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
         op: 'runAgentTurn',
         level: 'error',
         sessionId: input.sessionId,
-        message: err instanceof Error ? err.message : String(err),
+        message: (err instanceof Error ? err.message : String(err)).slice(0, 500),
       }),
     )
     return { text: SAFE_REPLY, key: null }
