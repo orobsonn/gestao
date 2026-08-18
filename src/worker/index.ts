@@ -10,7 +10,9 @@ import { createTelegramApp } from './routes/telegram.ts'
 import { runAgentTurn } from './agent/run-agent-turn.ts'
 import type { BatchDbLike, BatchStatement } from './services/create-empresa.ts'
 import type { DbLike, StatementLike } from './types.ts'
-import { flue } from '@flue/runtime/routing'
+import { createAgentRouter } from '@flue/runtime/routing'
+import GestaoBot from '../../.flue/agents/gestao-bot.ts'
+import { agentSecretGuard } from './middleware/agent-secret-guard.ts'
 
 /**
  * @description Worker bindings: D1, static assets, optional super-admin bootstrap secrets,
@@ -158,9 +160,17 @@ app.all('/api/telegram/*', (c) => {
 })
 
 /**
- * @description Mount Flue agent routes (gestao-bot) BEFORE ASSETS catch-all so agent HTTP is not swallowed by SPA.
+ * @description Mount gestao-bot agent routes BEFORE ASSETS catch-all so agent HTTP is not swallowed by SPA.
+ *
+ * Flue 2.x `createAgentRouter` serves POST /:id, GET|HEAD /:id (FULL conversation
+ * history — a tenant-data read), POST /:id/abort and GET /:id/attachments/:aid
+ * with NO built-in auth, and conversation ids are guessable. The internal-secret
+ * guard is registered with a `/*` suffix BEFORE the mount so it covers every
+ * route — never use the `app.post(...)` form the beta guard effectively had,
+ * which left the history-read route open.
  */
-app.route('/', flue())
+app.use('/agents/gestao-bot/*', agentSecretGuard)
+app.route('/agents/gestao-bot', createAgentRouter(GestaoBot))
 
 /**
  * @description Non-API: serve SPA/static assets (run_worker_first + not_found SPA).

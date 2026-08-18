@@ -42,8 +42,6 @@ const playbook = `**Playbook gestao-bot (pt-br) — respostas no Telegram**
 - Nunca invente tenant/expert ids nem dados de outra empresa.
 - Se houver DM boundary line, avise que resultados anteriores podem ser de outra empresa.`;
 
-const SECRET_HEADER = 'x-gestao-agent-internal-secret';
-
 function asDbLike(d1: unknown): DbLike {
   if (
     d1 != null &&
@@ -80,38 +78,6 @@ function asDbLike(d1: unknown): DbLike {
       };
     },
   } as DbLike;
-}
-
-async function safeEqual(a: string, b: string): Promise<boolean> {
-  const enc = new TextEncoder();
-  try {
-    const ha = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(a)));
-    const hb = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(b)));
-    return crypto.subtle.timingSafeEqual(ha, hb);
-  } catch {
-    const { timingSafeEqual, createHash } = await import('node:crypto');
-    return timingSafeEqual(createHash('sha256').update(a).digest(), createHash('sha256').update(b).digest());
-  }
-}
-
-/**
- * @description Timing-safe secret guard. Returns 403 Response on missing/wrong/empty-env; null on pass.
- */
-export function createAgentSecretGuard(env: Record<string, unknown>) {
-  const secret = (env?.GESTAO_AGENT_INTERNAL_SECRET as string | undefined)?.trim() ?? '';
-  if (!secret) {
-    return async (_req: Request) => new Response('{"error":"forbidden"}', { status: 403 });
-  }
-  return async (request: Request): Promise<Response | null> => {
-    const header = request.headers.get(SECRET_HEADER);
-    if (!header) {
-      return new Response('{"error":"forbidden"}', { status: 403 });
-    }
-    if (!(await safeEqual(secret, header))) {
-      return new Response('{"error":"forbidden"}', { status: 403 });
-    }
-    return null;
-  };
 }
 
 export function GestaoBot({ id }: AgentProps) {
