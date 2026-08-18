@@ -350,8 +350,10 @@ export function AdminPage() {
       );
       setIaActionError(message);
       toast.error(message);
-      if (status === 409) {
-        // The row we decided against is gone; refresh so the Select stops offering a stale catalog.
+      if (status === 409 || status === 400) {
+        // Refresh so the Select stops offering a stale catalog. 400 needs this as much as 409: a
+        // deploy that drops an id leaves the old page offering it, and without a refetch the save
+        // stays lit and every click repeats the same 400 until the operator reloads by hand.
         // Use the live scope ref so switching empresa cancels this refresh instead of repainting it.
         void loadLlm(scope);
       }

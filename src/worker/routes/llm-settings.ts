@@ -458,9 +458,16 @@ export function registerLlmRoutes(
         // the key of the SAME provider deliberately resets model_id, and this PUT would otherwise
         // re-attach a model to the fresh credential the admin just reset. `IS` (not `=`) so the
         // not-yet-keyed case matches NULL correctly.
-        // The predicate also carries the model this decision was made against: without it two
-        // admins saving different models would BOTH get 200, and the loser's dashboard would keep
-        // showing a model the bot is not running. RETURNING keeps the read atomic with the write.
+        //
+        // ⚠️ WHAT THIS DOES **NOT** GUARANTEE — read before trusting it. Every expected value
+        // (casProvider / casCiphertext / casModelId) is read by the SERVER from loadSettingsRow a
+        // few lines up, not supplied by the client. So the predicate only guards the window
+        // between that SELECT and this UPDATE, within one request. It does NOT prevent a lost
+        // update across two sessions: if admin B saves a model and admin A then saves from a stale
+        // screen, A's request re-reads B's value, the predicate matches, and A silently overwrites
+        // B — both get 200. Real cross-session protection needs the expected value to come from the
+        // CLIENT (an `expected_model_id` in the body), which is an API contract change and is
+        // deliberately NOT made here. Tracked in #82. RETURNING keeps the read atomic with the write.
         // The stored value is normalized in SQL to match what loadSettingsRow returned — comparing
         // a trimmed value against a raw column would make a padded row permanently unsaveable.
         const updatedRow = (await Promise.resolve(
@@ -480,10 +487,10 @@ export function registerLlmRoutes(
           return c.json(toMetadata(normalizeSettingsRow(updatedRow)), 200)
         }
 
-        // A failed CAS means the row this decision was made against no longer exists. Do NOT
-        // retry — re-binding would re-attach the model to whatever replaced it, the exact lost
-        // update the predicate exists to prevent. But if the winning row ALREADY holds what this
-        // request asked for, there is no conflict to report: the outcome converged.
+        // A failed CAS means the row moved between this request's SELECT and its UPDATE. Do NOT
+        // retry — re-binding would re-attach the model to whatever replaced it. But if the winning
+        // row ALREADY holds what this request asked for, there is no conflict to report: the
+        // outcome converged.
         const current = await loadSettingsRow(db, empresaId)
         if (
           current &&

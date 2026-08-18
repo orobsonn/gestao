@@ -21,8 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Salvar uma chave de API nova volta o modelo para o padrão do provedor e exige nova validação
-- Gravar o modelo agora falha com conflito se a chave da empresa, o provedor ou o modelo mudaram no
-  meio da edição, em vez de sobrescrever a alteração de outra pessoa
+- Gravar o modelo agora falha com conflito se a chave da empresa, o provedor ou o modelo mudarem
+  entre a leitura e a escrita do mesmo pedido. **Isso não cobre dois admins editando ao mesmo
+  tempo:** quem salvar por último ainda sobrescreve o outro em silêncio (ver #82)
 
 ### Fixed
 
