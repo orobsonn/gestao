@@ -10,9 +10,27 @@ import {
   decryptLlmApiKey,
   encryptLlmApiKey,
 } from '../services/llm-key-crypto.ts'
+import {
+  getLlmModelCatalog,
+  isCuratedLlmModel,
+  type LlmProvider,
+} from '../services/llm-model-catalog.ts'
+import { normalizeStoredModelId } from '../services/llm-turn-model.ts'
 import type { DbLike } from '../types.ts'
 
 const PROBE_TIMEOUT_MS = 8000
+const MAX_PUT_PAYLOAD_BYTES = 16 * 1024
+const MAX_MODEL_ID_LENGTH = 200
+/**
+ * SQLite's bare TRIM() strips ASCII space only, while `String.prototype.trim()` strips the whole
+ * whitespace set. The CAS compares a JS-trimmed value against the column, so the two must agree or
+ * a row holding e.g. a trailing newline could never be saved again.
+ */
+const SQL_TRIM_CHARS =
+  "' ' || char(9) || char(10) || char(11) || char(12) || char(13) || char(160) || " +
+  "char(5760) || char(8192) || char(8193) || char(8194) || char(8195) || char(8196) || " +
+  "char(8197) || char(8198) || char(8199) || char(8200) || char(8201) || char(8202) || " +
+  "char(8232) || char(8233) || char(8239) || char(8287) || char(12288) || char(65279)"
 const OPENAI_PROBE_URL = 'https://api.openai.com/v1/models'
 const ANTHROPIC_PROBE_URL = 'https://api.anthropic.com/v1/models'
 const ANTHROPIC_VERSION = '2023-06-01'
@@ -35,6 +53,10 @@ export type LlmSettingsDeps = {
 /** @description Metadata DTO only — never includes key/ciphertext/iv. */
 export type LlmSettingsMetadata = {
   provider: 'openai' | 'anthropic' | null
+  model_id: string | null
+  /** The empresa's stored choice when it is no longer curated; null otherwise. */
+  retired_model_id: string | null
+  models: readonly string[]
   has_key: boolean
   status: 'none' | 'unvalidated' | 'valid' | 'invalid'
   validated_at: string | null
@@ -59,15 +81,27 @@ type LlmSettingsRow = {
   provider: string | null
   api_key_ciphertext: string | null
   api_key_iv: string | null
+  model_id: string | null
   status: string
   validated_at: string | null
   last_error: string | null
 }
 
-const putBodySchema = z.object({
-  provider: z.enum(['openai', 'anthropic']),
-  api_key: z.string().min(1).max(8192),
-})
+const putBodySchema = z.union([
+  // `null` clears the model back to the per-provider default. The empty string is deliberately
+  // NOT accepted: it would persist a value the gate cannot resolve and kill the empresa's turns.
+  z
+    .object({
+      model_id: z.union([z.string().min(1).max(MAX_MODEL_ID_LENGTH), z.null()]),
+    })
+    .strict(),
+  z
+    .object({
+      provider: z.enum(['openai', 'anthropic']),
+      api_key: z.string().min(1).max(8192),
+    })
+    .strict(),
+])
 
 /**
  * @description True when encryption secret is present and non-whitespace.
@@ -86,6 +120,51 @@ function rowHasKey(row: LlmSettingsRow): boolean {
   )
 }
 
+/** @description Read a request body incrementally without materializing oversized payloads. */
+async function readLimitedBody(
+  request: Request,
+): Promise<string | null> {
+  const contentLength = request.headers.get('content-length')
+  if (contentLength !== null) {
+    const declaredLength = Number(contentLength)
+    if (Number.isSafeInteger(declaredLength) && declaredLength > MAX_PUT_PAYLOAD_BYTES) {
+      return null
+    }
+  }
+
+  if (!request.body) {
+    return ''
+  }
+
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let totalBytes = 0
+  try {
+    while (true) {
+      const result = await reader.read()
+      if (result.done) {
+        break
+      }
+      totalBytes += result.value.byteLength
+      if (totalBytes > MAX_PUT_PAYLOAD_BYTES) {
+        await reader.cancel()
+        return null
+      }
+      chunks.push(result.value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  const body = new Uint8Array(totalBytes)
+  let offset = 0
+  for (const chunk of chunks) {
+    body.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(body)
+}
+
 /**
  * @description Map DB row (or null) to Metadata DTO. status 'none' means no row.
  */
@@ -93,6 +172,9 @@ function toMetadata(row: LlmSettingsRow | null): LlmSettingsMetadata {
   if (!row) {
     return {
       provider: null,
+      model_id: null,
+      retired_model_id: null,
+      models: [],
       has_key: false,
       status: 'none',
       validated_at: null,
@@ -114,6 +196,19 @@ function toMetadata(row: LlmSettingsRow | null): LlmSettingsMetadata {
 
   return {
     provider,
+    // Mirror the read-side degrade: naming a model that left the catalog would leave the Select
+    // blank with the save button disabled, and the operator stuck with no way to pick again.
+    model_id:
+      provider && row.model_id && isCuratedLlmModel(provider as LlmProvider, row.model_id)
+        ? row.model_id
+        : null,
+    // Surfacing the discarded choice: reverting it silently leaves the admin looking at
+    // "provider default" with no idea their explicit pick was dropped.
+    retired_model_id:
+      provider && row.model_id && !isCuratedLlmModel(provider as LlmProvider, row.model_id)
+        ? row.model_id
+        : null,
+    models: provider ? [...getLlmModelCatalog(provider as LlmProvider)] : [],
     has_key: rowHasKey(row),
     status,
     validated_at:
@@ -158,11 +253,16 @@ async function loadSettingsRow(
     db
       .prepare(
         `SELECT empresa_id, provider, api_key_ciphertext, api_key_iv,
-                status, validated_at, last_error
+                model_id, status, validated_at, last_error
          FROM empresa_llm_settings WHERE empresa_id = ?`,
       )
       .get(empresaId),
   )
+  return normalizeSettingsRow(row)
+}
+
+/** @description Coerces one raw settings row into the typed shape; null when the row is absent. */
+function normalizeSettingsRow(row: any): LlmSettingsRow | null {
   if (!row || typeof row.empresa_id !== 'string') {
     return null
   }
@@ -181,6 +281,7 @@ async function loadSettingsRow(
         : row.api_key_iv == null
           ? null
           : String(row.api_key_iv),
+    model_id: normalizeStoredModelId(row.model_id),
     status: typeof row.status === 'string' ? row.status : 'unvalidated',
     validated_at:
       typeof row.validated_at === 'string' ? row.validated_at : null,
@@ -319,13 +420,13 @@ export function registerLlmRoutes(
     requireActiveEmpresa(db),
     requireEmpresaAdmin(),
     async (c) => {
-      if (!hasUsableSecret(secret)) {
-        return c.json({ error: 'Service unavailable' }, 503)
-      }
-
       let body: unknown
       try {
-        body = await c.req.json()
+        const rawBody = await readLimitedBody(c.req.raw)
+        if (rawBody === null) {
+          return c.json({ error: 'Invalid request' }, 400)
+        }
+        body = JSON.parse(rawBody)
       } catch {
         return c.json({ error: 'Invalid request' }, 400)
       }
@@ -336,6 +437,76 @@ export function registerLlmRoutes(
       }
 
       const empresaId = c.get('activeEmpresaId')
+
+      if ('model_id' in parsed.data) {
+        const modelId = parsed.data.model_id
+        const row = await loadSettingsRow(db, empresaId)
+        const casProvider = row?.provider
+        const casCiphertext = row?.api_key_ciphertext ?? null
+        const casModelId = row?.model_id ?? null
+        // Two distinct states, two distinct errors: "no provider saved yet" is not the same as
+        // "this model does not match the saved provider", and conflating them tells an API caller
+        // the wrong thing. Clearing is always compatible; only a concrete choice is checked.
+        if (casProvider !== 'openai' && casProvider !== 'anthropic') {
+          return c.json({ error: 'Not configured' }, 400)
+        }
+        if (modelId !== null && !isCuratedLlmModel(casProvider, modelId)) {
+          return c.json({ error: 'Invalid model' }, 400)
+        }
+
+        // The predicate carries provider AND key identity. Provider alone is not enough: rotating
+        // the key of the SAME provider deliberately resets model_id, and this PUT would otherwise
+        // re-attach a model to the fresh credential the admin just reset. `IS` (not `=`) so the
+        // not-yet-keyed case matches NULL correctly.
+        //
+        // ⚠️ WHAT THIS DOES **NOT** GUARANTEE — read before trusting it. Every expected value
+        // (casProvider / casCiphertext / casModelId) is read by the SERVER from loadSettingsRow a
+        // few lines up, not supplied by the client. So the predicate only guards the window
+        // between that SELECT and this UPDATE, within one request. It does NOT prevent a lost
+        // update across two sessions: if admin B saves a model and admin A then saves from a stale
+        // screen, A's request re-reads B's value, the predicate matches, and A silently overwrites
+        // B — both get 200. Real cross-session protection needs the expected value to come from the
+        // CLIENT (an `expected_model_id` in the body), which is an API contract change and is
+        // deliberately NOT made here. Tracked in #82. RETURNING keeps the read atomic with the write.
+        // The stored value is normalized in SQL to match what loadSettingsRow returned — comparing
+        // a trimmed value against a raw column would make a padded row permanently unsaveable.
+        const updatedRow = (await Promise.resolve(
+          db
+            .prepare(
+              `UPDATE empresa_llm_settings
+               SET model_id = ?
+               WHERE empresa_id = ? AND provider = ? AND api_key_ciphertext IS ?
+                 AND (CASE WHEN TRIM(COALESCE(model_id, ''), ${SQL_TRIM_CHARS}) = ''
+                           THEN NULL ELSE TRIM(model_id, ${SQL_TRIM_CHARS}) END) IS ?
+               RETURNING empresa_id, provider, api_key_ciphertext, api_key_iv,
+                         model_id, status, validated_at, last_error`,
+            )
+            .get(modelId, empresaId, casProvider, casCiphertext, casModelId),
+        )) as Record<string, unknown> | null | undefined
+        if (updatedRow) {
+          return c.json(toMetadata(normalizeSettingsRow(updatedRow)), 200)
+        }
+
+        // A failed CAS means the row moved between this request's SELECT and its UPDATE. Do NOT
+        // retry — re-binding would re-attach the model to whatever replaced it. But if the winning
+        // row ALREADY holds what this request asked for, there is no conflict to report: the
+        // outcome converged.
+        const current = await loadSettingsRow(db, empresaId)
+        if (
+          current &&
+          current.provider === casProvider &&
+          current.api_key_ciphertext === casCiphertext &&
+          (current.model_id ?? null) === modelId
+        ) {
+          return c.json(toMetadata(current), 200)
+        }
+        return c.json({ error: 'Settings changed' }, 409)
+      }
+
+      if (!hasUsableSecret(secret)) {
+        return c.json({ error: 'Service unavailable' }, 503)
+      }
+
       const { provider, api_key } = parsed.data
 
       let ciphertextHex: string
@@ -352,11 +523,12 @@ export function registerLlmRoutes(
       await Promise.resolve(
         db
           .prepare(
-            `INSERT INTO empresa_llm_settings
-               (empresa_id, provider, api_key_ciphertext, api_key_iv, status, validated_at, last_error)
-             VALUES (?, ?, ?, ?, 'unvalidated', NULL, NULL)
+             `INSERT INTO empresa_llm_settings
+               (empresa_id, provider, model_id, api_key_ciphertext, api_key_iv, status, validated_at, last_error)
+             VALUES (?, ?, NULL, ?, ?, 'unvalidated', NULL, NULL)
              ON CONFLICT(empresa_id) DO UPDATE SET
                provider = excluded.provider,
+               model_id = NULL,
                api_key_ciphertext = excluded.api_key_ciphertext,
                api_key_iv = excluded.api_key_iv,
                status = 'unvalidated',

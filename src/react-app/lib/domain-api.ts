@@ -164,17 +164,26 @@ export type LlmProvider = "openai" | "anthropic";
 /** @description Metadata DTO from GET/PUT/validate llm-settings — never includes key material. */
 export type LlmSettingsMetadata = {
   provider: LlmProvider | null;
+  /** Provider-native model chosen for this empresa; null means the per-provider default. */
+  model_id: string | null;
+  /** The stored choice when it is no longer offered; null otherwise. */
+  retired_model_id: string | null;
+  /** Curated choices for the saved provider; empty while no provider is saved. */
+  models: readonly string[];
   has_key: boolean;
   status: "none" | "unvalidated" | "valid" | "invalid";
   validated_at: string | null;
   last_error: string | null;
 };
 
-/** @description PUT /api/empresa/llm-settings body. */
-export type PutLlmSettingsBody = {
-  provider: LlmProvider;
-  api_key: string;
-};
+/**
+ * @description PUT /api/empresa/llm-settings body — an exclusive union, mirroring the server.
+ * Sending both shapes at once is rejected with 400, so they must not be merged into one object.
+ * `model_id: null` clears the choice back to the per-provider default.
+ */
+export type PutLlmSettingsBody =
+  | { provider: LlmProvider; api_key: string }
+  | { model_id: string | null };
 
 /** @description Health payload from GET llm-settings/health. */
 export type LlmHealthResponse =
@@ -267,9 +276,20 @@ export function buildCreateCampanhaBody(
 /**
  * @description Throw if response is not ok; used by all domain fetch wrappers.
  */
+/** @description API failure that keeps the HTTP status, so callers can tell 400 from 409. */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(label: string, status: number) {
+    super(`${label} failed: ${status}`);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 async function assertOk(res: Response, label: string): Promise<void> {
   if (!res.ok) {
-    throw new Error(`${label} failed: ${res.status}`);
+    throw new ApiError(label, res.status);
   }
 }
 
@@ -502,6 +522,15 @@ export async function fetchLlmSettings(): Promise<LlmSettingsMetadata> {
   const res = await authFetch(LLM_SETTINGS_API_PATH, { method: "GET" });
   await assertOk(res, "fetchLlmSettings");
   return (await res.json()) as LlmSettingsMetadata;
+}
+
+/**
+ * @description PUT /api/empresa/llm-settings — model choice only; null restores the default.
+ */
+export async function putLlmModel(
+  modelId: string | null,
+): Promise<LlmSettingsMetadata> {
+  return putLlmSettings({ model_id: modelId });
 }
 
 /**

@@ -1,6 +1,6 @@
 /** @description Admin page — Pessoas (membros) and IA (LLM settings) tabs. */
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -51,8 +51,17 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ADMIN_TAB_IDS,
   buildCreateMembroBody,
+  canSaveLlmModel,
+  LLM_MODEL_DEFAULT_LABEL,
+  LLM_MODEL_DEFAULT_OPTION,
+  llmModelHelpCopy,
+  llmRetiredModelCopy,
+  llmModelSelectValue,
   mapLlmHealthReasonCopy,
+  mapLlmModelSaveFeedback,
   mapLlmStatusBadge,
+  resolveLlmModelSelection,
+  shouldApplyLlmWrite,
   type AdminTabId,
 } from "@/lib/admin-ui";
 import { AdminTelegramPanel } from "@/components/admin-telegram-panel";
@@ -61,6 +70,7 @@ import {
   fetchLlmHealth,
   fetchLlmSettings,
   fetchMembros,
+  putLlmModel,
   putLlmSettings,
   validateLlmSettings,
   type LlmHealthResponse,
@@ -211,11 +221,24 @@ export function AdminPage() {
 
   const [provider, setProvider] = useState<LlmProvider>("openai");
   const [apiKey, setApiKey] = useState("");
+  const [modelSelection, setModelSelection] = useState(LLM_MODEL_DEFAULT_OPTION);
+  const [savingModel, setSavingModel] = useState(false);
+  // Two writes to the same row can be in flight (model + credential). Only the newest response
+  // may touch state, or a slow save re-applies a value the server already replaced.
+  const llmWriteSeq = useRef(0);
+  // Tracks the CURRENT empresa scope so a late refresh cannot repaint another empresa's settings.
+  const llmScopeRef = useRef({ current: false });
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState(false);
   const [iaActionError, setIaActionError] = useState<string | null>(null);
 
   const loadLlm = useCallback(async (cancelled: { current: boolean }) => {
+    // A refresh for a scope that is already cancelled must not turn on a spinner nobody will turn
+    // off — the finally below is itself scope-guarded.
+    if (cancelled.current) return;
+    // Joining the same total order as the writers: a read started before a newer write must not
+    // repaint the value that write already replaced.
+    const seq = ++llmWriteSeq.current;
     setLlmLoading(true);
     setLlmLoadError(null);
     try {
@@ -223,12 +246,13 @@ export function AdminPage() {
         fetchLlmSettings(),
         fetchLlmHealth(),
       ]);
-      if (!cancelled.current) {
+      if (!cancelled.current && shouldApplyLlmWrite(seq, llmWriteSeq.current)) {
         setLlmMeta(meta);
         setLlmHealth(health);
-        if (meta.provider === "openai" || meta.provider === "anthropic") {
-          setProvider(meta.provider);
-        }
+        // Always set it: an empresa with no saved provider must fall back to the default rather
+        // than inherit the previous empresa's dropdown value into a destructive credential save.
+        setProvider(meta.provider === "anthropic" ? "anthropic" : "openai");
+        setModelSelection(llmModelSelectValue(meta.model_id));
         // Never hydrate the key field from the server
         setApiKey("");
       }
@@ -250,9 +274,12 @@ export function AdminPage() {
 
   useEffect(() => {
     const cancelled = { current: false };
+    llmScopeRef.current = cancelled;
     setLlmMeta(null);
     setLlmHealth(null);
     setApiKey("");
+    setProvider("openai");
+    setModelSelection(LLM_MODEL_DEFAULT_OPTION);
     setIaActionError(null);
     void loadLlm(cancelled);
     return () => {
@@ -267,21 +294,28 @@ export function AdminPage() {
       setIaActionError("Informe a chave de API para salvar.");
       return;
     }
+    const scope = llmScopeRef.current;
+    const seq = ++llmWriteSeq.current;
     setSaving(true);
     setIaActionError(null);
     try {
       const meta = await putLlmSettings({ provider, api_key: key });
+      if (scope.current || !shouldApplyLlmWrite(seq, llmWriteSeq.current)) return;
       setLlmMeta(meta);
+      // A credential save resets the model server-side; mirror it instead of showing a stale pick.
+      setModelSelection(llmModelSelectValue(meta.model_id));
       // Clear key from form state after successful save — never keep it
       setApiKey("");
       toast.success("Configuração de IA salva.");
       try {
         const health = await fetchLlmHealth();
+        if (scope.current || !shouldApplyLlmWrite(seq, llmWriteSeq.current)) return;
         setLlmHealth(health);
       } catch {
         // Metadata save succeeded; health refresh is best-effort
       }
     } catch {
+      if (scope.current || !shouldApplyLlmWrite(seq, llmWriteSeq.current)) return;
       const message = "Não foi possível salvar a configuração de IA.";
       setIaActionError(message);
       toast.error(message);
@@ -290,11 +324,52 @@ export function AdminPage() {
     }
   }
 
+  /**
+   * @description Saves the model choice alone. A null selection restores the provider default;
+   * 400/409 are distinguished because they need different operator actions.
+   */
+  async function onSaveLlmModel() {
+    const modelId = resolveLlmModelSelection(modelSelection);
+    const scope = llmScopeRef.current;
+    const seq = ++llmWriteSeq.current;
+    setSavingModel(true);
+    setIaActionError(null);
+    try {
+      const meta = await putLlmModel(modelId);
+      if (scope.current || !shouldApplyLlmWrite(seq, llmWriteSeq.current)) return;
+      setLlmMeta(meta);
+      setModelSelection(llmModelSelectValue(meta.model_id));
+      toast.success(
+        mapLlmModelSaveFeedback(modelId === null ? "cleared" : "saved"),
+      );
+    } catch (error) {
+      if (scope.current || !shouldApplyLlmWrite(seq, llmWriteSeq.current)) return;
+      const status = (error as { status?: number } | null)?.status;
+      const message = mapLlmModelSaveFeedback(
+        status === 400 ? "invalid" : status === 409 ? "conflict" : "error",
+      );
+      setIaActionError(message);
+      toast.error(message);
+      if (status === 409 || status === 400) {
+        // Refresh so the Select stops offering a stale catalog. 400 needs this as much as 409: a
+        // deploy that drops an id leaves the old page offering it, and without a refetch the save
+        // stays lit and every click repeats the same 400 until the operator reloads by hand.
+        // Use the live scope ref so switching empresa cancels this refresh instead of repainting it.
+        void loadLlm(scope);
+      }
+    } finally {
+      setSavingModel(false);
+    }
+  }
+
   async function onValidateLlm() {
+    const scope = llmScopeRef.current;
+    const seq = ++llmWriteSeq.current;
     setValidating(true);
     setIaActionError(null);
     try {
       const meta = await validateLlmSettings();
+      if (scope.current || !shouldApplyLlmWrite(seq, llmWriteSeq.current)) return;
       setLlmMeta(meta);
       if (meta.status === "valid") {
         toast.success("Chave validada com sucesso.");
@@ -307,11 +382,13 @@ export function AdminPage() {
       }
       try {
         const health = await fetchLlmHealth();
+        if (scope.current || !shouldApplyLlmWrite(seq, llmWriteSeq.current)) return;
         setLlmHealth(health);
       } catch {
         // ignore health refresh failure
       }
     } catch {
+      if (scope.current || !shouldApplyLlmWrite(seq, llmWriteSeq.current)) return;
       const message =
         "Não foi possível validar a chave. Tente novamente em instantes.";
       setIaActionError(message);
@@ -605,6 +682,70 @@ export function AdminPage() {
                       </Select>
                     </div>
                     <div className="grid gap-2">
+                      <Label htmlFor="llm-model">Modelo</Label>
+                      <Select
+                        value={modelSelection}
+                        onValueChange={setModelSelection}
+                        disabled={
+                          !llmMeta?.provider ||
+                          (llmMeta?.models.length ?? 0) === 0 ||
+                          provider !== llmMeta?.provider
+                        }
+                      >
+                        <SelectTrigger id="llm-model">
+                          <SelectValue placeholder="Modelo" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={LLM_MODEL_DEFAULT_OPTION}>
+                            {LLM_MODEL_DEFAULT_LABEL}
+                          </SelectItem>
+                          {(llmMeta?.models ?? []).map((modelId) => (
+                            <SelectItem key={modelId} value={modelId}>
+                              {modelId}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {llmRetiredModelCopy(llmMeta?.retired_model_id ?? null) ? (
+                        <p className="text-destructive text-sm">
+                          {llmRetiredModelCopy(llmMeta?.retired_model_id ?? null)}
+                        </p>
+                      ) : null}
+                      <p className="text-muted-foreground text-sm">
+                        {llmModelHelpCopy(llmMeta?.provider ?? null, provider)}
+                      </p>
+                      <div>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          disabled={
+                            !canSaveLlmModel({
+                              saving,
+                              savingModel,
+                              validating,
+                              savedProvider: llmMeta?.provider ?? null,
+                              selectedProvider: provider,
+                              modelSelection,
+                              savedModelId: llmMeta?.model_id ?? null,
+                              retiredModelId: llmMeta?.retired_model_id ?? null,
+                            })
+                          }
+                          onClick={() => {
+                            void onSaveLlmModel();
+                          }}
+                        >
+                          {savingModel ? (
+                            <>
+                              <Spinner />
+                              Salvando modelo…
+                            </>
+                          ) : (
+                            "Salvar modelo"
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="grid gap-2">
                       <Label htmlFor="llm-api-key">Chave de API</Label>
                       <Input
                         id="llm-api-key"
@@ -623,7 +764,9 @@ export function AdminPage() {
                     <div className="flex flex-wrap gap-2">
                       <Button
                         type="submit"
-                        disabled={saving || validating || !apiKey.trim()}
+                        disabled={
+                          saving || savingModel || validating || !apiKey.trim()
+                        }
                       >
                         {saving ? (
                           <>
@@ -639,6 +782,7 @@ export function AdminPage() {
                         variant="secondary"
                         disabled={
                           saving ||
+                          savingModel ||
                           validating ||
                           !llmMeta?.has_key ||
                           llmMeta.status === "none"
