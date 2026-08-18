@@ -387,9 +387,9 @@ async function invokeTool(tool, data = {}) {
 }
 
 /**
- * @description Unwrap a Flue 2.x ToolRunEnvelope to its `output` payload. If the value
- * is not an envelope (no own `output`), return it as-is (defensive — keeps helpers
- * working against both shapes during the migration).
+ * @description Unwrap a Flue 2.x ToolRunEnvelope to its `output` payload. Fails hard
+ * if the value is not a real envelope — the beta bare-object shape must not slip
+ * through the oracle.
  * @param {unknown} result
  */
 function payloadOf(result) {
@@ -400,7 +400,10 @@ function payloadOf(result) {
   ) {
     return /** @type {{ output: unknown }} */ (result).output;
   }
-  return result;
+  assert.fail(
+    "tool result must be a Flue 2.x envelope owning output, got: " +
+      JSON.stringify(result),
+  );
 }
 
 /**
@@ -428,12 +431,12 @@ function resultText(result) {
 function isTerminalStopResult(result) {
   if (result && typeof result === "object") {
     const r = /** @type {Record<string, unknown>} */ (result);
-    if (r.terminate === true) return true;
-    // Legacy envelope-level keys kept only as a defensive fallback; the 2.x
-    // contract never sets these, so reaching them is a contract regression.
-    if (r.terminal === true || r.end_turn === true || r.stop === true) {
-      return true;
-    }
+    assert.equal(
+      Object.hasOwn(r, "terminal"),
+      false,
+      "Flue 2.x envelope must not contain legacy beta `terminal` key",
+    );
+    return r.terminate === true;
   }
   return false;
 }
@@ -1316,6 +1319,98 @@ test("lt-definir-empresa-ativa-sets-pin-and-pending-boundary: pin B + pending_bo
   assert.ok(
     isTerminalStopResult(result),
     "tool result must be terminal (signals end-turn / stop)",
+  );
+
+  db.close();
+});
+
+// ─── lt-tools-batch-latch-after-empresa-switch ─────────────────────────────
+
+/**
+ * @description After definir_empresa_ativa switches empresa in a DM batch, sibling
+ * mutating tools in the same factory closure abort instead of writing under the old
+ * tenant. Reverse order (write then switch) must still work.
+ */
+test("lt-tools-batch-latch-after-empresa-switch: switch blocks sibling writes in same batch", async () => {
+  const db = openDb();
+  const actorId = "user-actor";
+  const empA = "emp-A";
+  const empB = "emp-B";
+  seedEmpresa(db, { id: empA, nome: "Empresa A" });
+  seedEmpresa(db, { id: empB, nome: "Empresa B" });
+  seedUser(db, { id: actorId, name: "Actor" });
+  seedMembro(db, empA, actorId);
+  seedMembro(db, empB, actorId);
+  const expertA = seedExpert(db, { id: "expert-A", empresaId: empA });
+  const campA = seedCampanha(db, {
+    id: "camp-A",
+    empresaId: empA,
+    expertId: expertA.id,
+    status: "aberta",
+  });
+
+  const tools = buildTools(db, {
+    empresa_id: empA,
+    expert_id: null,
+    actor_user_id: actorId,
+    surface: "dm",
+  });
+
+  // Switch then write: the write must abort before touching the DB.
+  const switchResult = await invokeTool(
+    getTool(tools, "definir_empresa_ativa"),
+    { empresa_id: empB },
+  );
+  assert.ok(isTerminalStopResult(switchResult), "switch result must be terminal");
+
+  const badCreate = await invokeTool(getTool(tools, "criar_tarefa"), {
+    titulo: "nao deve gravar",
+  });
+  const badPayload = payloadOf(badCreate);
+  assert.equal(
+    /** @type {Record<string, unknown>} */ (badPayload).ok,
+    false,
+    "criar_tarefa after switch must resolve ok:false",
+  );
+  assert.equal(
+    /** @type {Record<string, unknown>} */ (badPayload).error,
+    "A empresa ativa mudou neste turno. Refaça o pedido.",
+  );
+  assert.equal(
+    getTarefaByTitulo(db, "nao deve gravar"),
+    undefined,
+    "no tarefa row must exist after latch blocks create",
+  );
+
+  // Reverse order (write then switch) must keep working — latch only blocks after a switch.
+  const reverseTools = buildTools(db, {
+    empresa_id: empA,
+    expert_id: null,
+    actor_user_id: actorId,
+    surface: "dm",
+  });
+  const goodCreate = await invokeTool(getTool(reverseTools, "criar_tarefa"), {
+    titulo: "deve gravar",
+    campanha_id: campA.id,
+  });
+  const goodPayload = payloadOf(goodCreate);
+  assert.equal(
+    /** @type {Record<string, unknown>} */ (goodPayload).ok,
+    true,
+    "create before switch must succeed",
+  );
+  assert.equal(
+    getTarefaByTitulo(db, "deve gravar")?.empresa_id,
+    empA,
+    "create before switch must persist under original empresa A",
+  );
+  const reverseSwitch = await invokeTool(
+    getTool(reverseTools, "definir_empresa_ativa"),
+    { empresa_id: empB },
+  );
+  assert.ok(
+    isTerminalStopResult(reverseSwitch),
+    "reverse switch result must be terminal",
   );
 
   db.close();

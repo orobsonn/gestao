@@ -167,6 +167,12 @@ export function createGestaoBotTools(
 
   const tools: ToolDefinition[] = []
 
+  // In Flue 2.x, `terminate: true` settles the tool batch rather than aborting it.
+  // If `definir_empresa_ativa` runs before a sibling mutating tool, that sibling would
+  // still execute against the OLD empresa closure and write into the wrong tenant.
+  // This per-render latch blocks any further mutating tool in the same batch after a switch.
+  let activeEmpresaSwitched = false
+
   // Common helpers
   async function ensureFk(): Promise<void> {
     await enableForeignKeysAsync(db)
@@ -257,6 +263,9 @@ export function createGestaoBotTools(
         campanhaId: v.optional(v.string()),
       }),
       run: async ({ data }) => {
+      if (activeEmpresaSwitched) {
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
+      }
       await ensureFk()
       const titulo = String(data.titulo ?? '').trim()
       if (!titulo) return { output: { ok: false, error: 'titulo obrigatório' } }
@@ -389,6 +398,9 @@ export function createGestaoBotTools(
         titulo: v.optional(v.string()),
       }),
       run: async ({ data }) => {
+      if (activeEmpresaSwitched) {
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
+      }
       await ensureFk()
       const id = String(data.id ?? data.tarefa_id ?? '')
       if (!id) return { output: { ok: false, error: 'id obrigatório' } }
@@ -459,6 +471,9 @@ export function createGestaoBotTools(
         tarefa_id: v.optional(v.string()),
       }),
       run: async ({ data }) => {
+      if (activeEmpresaSwitched) {
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
+      }
       await ensureFk()
       const id = String(data.id ?? data.tarefa_id ?? '')
       if (!id) return { output: { ok: false, error: 'id obrigatório' } }
@@ -495,6 +510,9 @@ export function createGestaoBotTools(
         message: v.optional(v.string()),
       }),
       run: async ({ data }) => {
+      if (activeEmpresaSwitched) {
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
+      }
       await ensureFk()
       const userId = String(data.user_id ?? data.userId ?? '')
       const mensagem = String(data.mensagem ?? data.message ?? '')
@@ -604,6 +622,7 @@ export function createGestaoBotTools(
           db.prepare(`SELECT empresa_id FROM telegram_dm_active_empresa WHERE user_id = ?`).get(closureActorId),
         )
         if ((current as any)?.empresa_id === targetEmpresaId) {
+          activeEmpresaSwitched = true
           return { output: { empresa_id: targetEmpresaId }, terminate: true }
         }
         await Promise.resolve(
@@ -617,6 +636,7 @@ export function createGestaoBotTools(
             )
             .run(closureActorId, targetEmpresaId),
         )
+        activeEmpresaSwitched = true
         return { output: { empresa_id: targetEmpresaId }, terminate: true }
       },
       }),
