@@ -24,10 +24,6 @@ import { handleBotTurn } from "../src/worker/services/bot-turn-orchestrator.ts";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
 const MIGRATIONS_DIR = resolve(REPO_ROOT, "migrations");
-const ORCHESTRATOR_SRC = resolve(
-  REPO_ROOT,
-  "src/worker/services/bot-turn-orchestrator.ts",
-);
 
 const TEST_ENCRYPTION_SECRET =
   "test-llm-key-encryption-secret-flue2-signal-attrs-hermetic";
