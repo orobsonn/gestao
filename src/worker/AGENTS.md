@@ -24,10 +24,13 @@ Cloudflare Worker API (Hono) for auth, bootstrap, and platform provision.
 ## LLM settings (`empresa_llm_settings`)
 
 - **Two model formats, deliberately opposite:** `empresa_llm_settings.model_id` is **provider-native**
-  (`gpt-4o-mini`); `telegram_agent_turn_context.model_id` is **provider-namespaced**
+  (`gpt-4o-mini`); the dispatched signal's `attributes.modelId` (built by `buildSignalAttributes` in
+  `bot-turn-orchestrator.ts`, read by `.flue/agents/gestao-bot.ts`) is **provider-namespaced**
   (`openai/gpt-4o-mini`). `resolveEmpresaLlmTurnModel` is the only bridge. There is NO format guard
-  on the write — `insertTurnContext` stores what the orchestrator passes, so the caller owns the
-  contract.
+  at the dispatch site — the orchestrator's `buildSignalAttributes` emits whatever
+  `loadEmpresaLlmForBot` returns, so the caller owns the contract. (Superseded the D1
+  `telegram_agent_turn_context.model_id` bridge, dropped by migration `0011` — see
+  `turn-context-attributes-not-d1` in `MEMORY.md`.)
 - **Curated catalog is a second source of truth — pin it.** Every id in `llm-model-catalog.ts` must
   resolve in the bundled `@earendil-works/pi-ai` registry with a non-zero token budget. An id that
   is a real provider model but unknown to the registry resolves to zero metadata, so the request

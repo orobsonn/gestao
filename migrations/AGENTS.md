@@ -42,3 +42,32 @@ Skipping files or applying out of order breaks the chain contract locked by `tes
 ## Hierarchy (v1)
 
 `Empresa → Expert → Campanha → Tarefa` only. No `projects` / `tasks` synonym tables.
+
+## Deploy order for `0011_drop_telegram_agent_turn_context.sql` (accepted trade-off)
+
+Migration `0011` DROPs `telegram_agent_turn_context`, a table the still-live beta Worker **reads**
+on every turn. The decided order for this migration is:
+
+**migrate-all → build → deploy**
+
+i.e. `npm run db:migrate` (applies `0010` + `0011` to prod D1) runs and completes **before** the new
+Worker is built and deployed. This accepts a short window — between the migration landing and the
+new Worker going live — where the still-running beta Worker's read against the now-dropped table
+fails.
+
+**Why this order, and why the window is accepted:**
+
+- The new Worker needs `0010`'s send-guard table (`telegram_agent_reply_sends`) in place **before**
+  its very first turn — reversing the order (deploy first, migrate after) would leave the new Worker
+  without the guard it depends on for its own first requests.
+- The beta turn path this window can degrade is **already broken** — `0011` exists specifically to
+  fix the `turn_token` PRIMARY KEY collision in the D1 turn-context bridge that could drop a second
+  user's message and wedge a topic permanently (see `turn-context-attributes-not-d1` in
+  `MEMORY.md`). The window trades a few extra minutes of an already-known-broken path for a clean
+  cutover, not a regression from a healthy state.
+- **Blast radius at decision time:** production has **0 linked Telegram groups, 0 linked topics, 1
+  linked Telegram user.** The window's worst case is one DM user's bot reply failing for the minutes
+  between migration and deploy — not a multi-tenant incident.
+
+This is a written trade-off, not silence: do not "fix" the ordering to be simultaneous or
+deploy-first without re-evaluating the send-guard dependency above.

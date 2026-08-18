@@ -39,10 +39,10 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 - [bind-code-reject-without-claim](#bind-code-reject-without-claim) — one-shot bind codes: pre-check map conflicts before claim (or unclaim on reject); D1 batch must not burn code without map
 - [partial-unique-no-null-key](#partial-unique-no-null-key) — SQLite partial UNIQUE never keys a NULL-able column alone; split indexes by kind with non-null keys
 - [telegram-forum-reply-thread-id](#telegram-forum-reply-thread-id) — Bot API sendMessage inside a forum topic must include message_thread_id or the reply lands in General
-- [bot-session-id-stable](#bot-session-id-stable) — agent session ids are `topic:{chat}:{thread}` / `dm:{userId}` (String-canonical), never random UUID per message
+- [bot-session-id-stable](#bot-session-id-stable) — agent session ids are `tp2:{chat}:{thread}` / `dm2:{empresaId}:{userId}` (String-canonical, empresa-scoped DM), never random UUID per message
 - [bot-tenant-closure-not-model](#bot-tenant-closure-not-model) — tool tenant scope comes only from closure (binding/pin/actor), never model-supplied empresa_id
-- [turn-context-oneshot-encrypted](#turn-context-oneshot-encrypted) — Flue body is `{message}` only; gated fields live in D1 turn row (ciphertext+iv) + turn-token header, single-use consume
-- [flue-deploy-after-vite](#flue-deploy-after-vite) — deploy order is vite/client build then `flue build` then wrangler `--config dist/gestao/wrangler.json` so Flue worker is not overwritten
+- [turn-context-attributes-not-d1](#turn-context-attributes-not-d1) — the D1 turn-context bridge is deleted; the turn's non-secret facts ride the dispatched signal's `attributes`, the API key is resolved inside the DO
+- [flue-deploy-is-plain-wrangler](#flue-deploy-is-plain-wrangler) — `flue build` does not exist in 2.x; deploy is plain `wrangler deploy` from the project root via the `.wrangler/deploy/config.json` redirect written by `vite build`; `npm run deploy` is the only sanctioned invocation
 - [d1-run-changes-dual-shape](#d1-run-changes-dual-shape) — stmt.run() changes may be `{changes}` (node:sqlite) or `{meta.changes}` (D1); normalize both
 
 ---
@@ -313,9 +313,9 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 
 ## bot-session-id-stable
 
-**Why:** Random session ids per message break Flue agent memory continuity across turns on the same topic/DM.
+**Why:** Random session ids per message break Flue agent memory continuity across turns on the same topic/DM. A DM id keyed on `userId` alone also collapses two empresas' turns for the same Telegram user onto one Durable Object.
 
-**How to apply:** `buildSessionId({ kind:'topic', chatId, threadId })` → `topic:{String(chat)}:{String(thread)}`; DM → `dm:{String(userId)}`. Canonicalize ids with `String()` so number/string parity holds.
+**How to apply:** `buildSessionId({ kind:'topic', chatId, threadId })` → `tp2:{String(chat)}:{String(thread)}`; `buildSessionId({ kind:'dm', empresaId, userId })` → `dm2:{String(empresaId)}:{String(userId)}` — constructing a DM id without an `empresaId` throws. Canonicalize ids with `String()` so number/string parity holds. See `src/worker/services/build-session-id.ts` and `tests/build-session-id.test.mjs`.
 
 ---
 
@@ -327,19 +327,19 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 
 ---
 
-## turn-context-oneshot-encrypted
+## turn-context-attributes-not-d1
 
-**Why:** Flue strips extra JSON body keys and Worker ALS does not cross the DO hop; plaintext apiKey must not ride the Flue body.
+**Why:** The D1 turn-context bridge (`telegram_agent_turn_context`, dropped by migration `0011`) was a `turn_token` PRIMARY KEY keyed by the shared topic agent id — a second user's message in the same window collided on that key, dropped the message, and could wedge the topic permanently. Flue 2.x's `init(GestaoBot, { id })` dispatch has no D1/HTTP hop to bridge through.
 
-**How to apply:** Orchestrator `insertTurnContext` stores encryptLlmApiKey pair + identity; `runAgentTurn` POSTs `{message}` + `x-gestao-turn-token` + internal secret. Agent route binds/consumes single-use; parse `?wait=result` as `{ result: { text } }`, never raw envelope.
+**How to apply:** The orchestrator (`buildSignalAttributes` in `bot-turn-orchestrator.ts`) dispatches `{ kind: 'signal', type: 'telegram.message', body, attributes }` where `attributes` is a closed `Record<string,string>` of `empresaId`, `expertId`, `actorUserId`, `surface`, `provider`, `modelId`, `dmBoundaryLine` — **no key material**, every value is emitted verbatim into the model's context. `GestaoBot` reads `useDelivery().attributes` and resolves+decrypts the empresa's LLM API key itself inside the Durable Object via `loadEmpresaLlmForBot` — the key never travels on the signal. See `tests/flue2-signal-attributes.test.mjs`.
 
 ---
 
-## flue-deploy-after-vite
+## flue-deploy-is-plain-wrangler
 
-**Why:** `vite build` with the Cloudflare plugin overwrites `dist/gestao` and destroys Flue's `configureFlueRuntime` + DO class exports if it runs after `flue build`.
+**Why:** `flue build` does not exist in Flue 2.x — `@flue/vite`'s `flue()` + `cloudflare({ config: flueWorkerConfig() })` plugin pair generates the Worker entry and `dist/gestao/wrangler.json` as part of `vite build` itself, and writes a redirect at `.wrangler/deploy/config.json` that points a plain `wrangler deploy` (run from the project root) at that generated config — no `--config` flag, no separate Flue CLI step.
 
-**How to apply:** `deploy`: `npm run build && npx flue build --target cloudflare && wrangler deploy --config dist/gestao/wrangler.json`. Keep source `wrangler.jsonc` main as Vite entry for locked contract; production ships the generated Flue entry. Migrations include `FlueRegistry` + agent class additive only.
+**How to apply:** `npm run deploy` (`wrangler deploy`) is the **only sanctioned invocation**. It is preceded by `predeploy` (`clean:deploy-redirect && cf-typegen && build`), which wipes any stale `.wrangler/deploy` redirect and rebuilds from HEAD before wrangler resolves the redirect. Running raw `wrangler deploy` directly — skipping `npm run deploy` — skips `predeploy` and can publish a **stale `dist/`** together with whatever Durable-Object migration is currently declared, which is destructive if that migration deletes/renames a live DO class. `wrangler.jsonc` no longer authors `main` or any `FLUE_`-prefixed DO binding name — that surface is Flue-generated, not authored (locked by `tests/flue2-build-wiring.test.mjs`). For the migration-vs-deploy sequencing around a schema change that a still-live Worker reads, see "Deploy order for `0011_drop_telegram_agent_turn_context.sql`" in `migrations/AGENTS.md`.
 
 ---
 

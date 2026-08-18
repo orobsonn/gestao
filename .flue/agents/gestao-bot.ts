@@ -152,5 +152,3 @@ export function GestaoBot(_props: AgentProps) {
 
 GestaoBot.agentName = 'gestao-bot-v2';
 GestaoBot.durability = GESTAO_BOT_DURABILITY;
-
-export default GestaoBot;

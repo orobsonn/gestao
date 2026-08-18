@@ -33,7 +33,7 @@ const agentModulePromise = import(pathToFileURL(agentModulePath).href);
  * @description GestaoBot.durability locks the single-attempt, 60s-ceiling policy.
  */
 test("lt-flue2-agent-durability-static: GestaoBot.durability deep-equals { maxAttempts: 1, timeoutMs: 60000 }", async () => {
-  const { default: GestaoBot } = await agentModulePromise;
+  const { GestaoBot } = await agentModulePromise;
 
   assert.deepEqual(
     GestaoBot.durability,
@@ -48,7 +48,7 @@ test("lt-flue2-agent-durability-static: GestaoBot.durability deep-equals { maxAt
  * @description GestaoBot.agentName is the new v2 identity, never the retired beta one.
  */
 test("lt-flue2-agent-name-is-the-new-identity: GestaoBot.agentName equals gestao-bot-v2 and is not gestao-bot", async () => {
-  const { default: GestaoBot } = await agentModulePromise;
+  const { GestaoBot } = await agentModulePromise;
 
   assert.equal(
     GestaoBot.agentName,
@@ -68,7 +68,7 @@ test("lt-flue2-agent-name-is-the-new-identity: GestaoBot.agentName equals gestao
  * @description GestaoBot.durability is wired to GESTAO_BOT_DURABILITY, not a copy.
  */
 test("lt-flue2-durability-wired-to-identity-module: GestaoBot.durability is the same value as GESTAO_BOT_DURABILITY", async () => {
-  const { default: GestaoBot } = await agentModulePromise;
+  const { GestaoBot } = await agentModulePromise;
 
   assert.ok(
     GESTAO_BOT_DURABILITY,
@@ -136,12 +136,12 @@ test("lt-flue2-agent-source-has-no-beta-tokens: source starts with 'use agent' a
  * @description GestaoBot is a plain function, never an AsyncFunction.
  */
 test("lt-flue2-render-is-not-async: typeof GestaoBot is function and GestaoBot.constructor.name is Function, not AsyncFunction", async () => {
-  const { default: GestaoBot } = await agentModulePromise;
+  const { GestaoBot } = await agentModulePromise;
 
   assert.equal(
     typeof GestaoBot,
     "function",
-    "GestaoBot default export must be a function",
+    "GestaoBot named export must be a function",
   );
   assert.equal(
     GestaoBot.constructor.name,

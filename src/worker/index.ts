@@ -12,7 +12,7 @@ import type { BatchDbLike, BatchStatement } from './services/create-empresa.ts'
 import type { DbLike, StatementLike } from './types.ts'
 import { createAgentRouter } from '@flue/runtime/routing'
 import { init } from '@flue/runtime'
-import GestaoBot from '../../.flue/agents/gestao-bot.ts'
+import { GestaoBot } from '../../.flue/agents/gestao-bot.ts'
 import { agentSecretGuard } from './middleware/agent-secret-guard.ts'
 
 /**
