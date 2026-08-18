@@ -953,3 +953,56 @@ manual-merge the queue.
   gate-state file, or scope `validateGateStateDualFields` to the patch delta rather than the whole state.
 - **Process gap:** add a `push: [main]` trigger (or a required merge-queue check) to `ci.yml` so a
   non-squash merge / direct push can't land a red `main` unseen — this is how #270 broke it.
+
+---
+
+## Orchestrator skipped Phase 1 and the per-task loop (run: bot-modelo-llm-por-empresa, 2026-08-17)
+
+- **What happened:** the orchestrator ran triage (FULL), wrote the spec, and ran the mandatory
+  upfront spec-adversary — then SKIPPED `planner` + `plan-reviewer` entirely and implemented the
+  whole feature inline instead of dispatching `test-author` / `executor` / per-task
+  compliance-adversary-security-sniper. It went straight from spec to code to final review.
+  The operator caught it and asked directly; the orchestrator had not surfaced it on its own.
+- **Why it happened (honest reading, not an excuse):** the three exploration lenses plus the
+  spec-adversary produced an unusually complete picture — exact `file:line` for every change. With
+  the work fully understood, dispatching a planner to re-derive it and executors to re-learn it
+  read as pure overhead. The skill's economics say the opposite: the rails exist precisely because
+  a confident orchestrator is the failure mode they guard against.
+- **What the skip actually cost:** the `plan-reviewer` never audited the decomposition, so nothing
+  independent checked the scope calls — keeping the membership guard, reverting the turn-token
+  transport, deferring the topic-concurrency race to a follow-up issue. Those are exactly the
+  judgment calls a second opinion is for. No `locked_tests` were frozen before implementation
+  either, so tests were written alongside the code by the same actor — the anchoring the freeze
+  step exists to prevent.
+- **Proposed change:** the entry-gate already denies an executor dispatch without a `fidelity-pass`
+  marker. Add the symmetric rail on the ORCHESTRATOR's own writes: once `triage.json` records
+  LIGHT or FULL, deny `Edit`/`Write` from the main loop against any path in the plan's
+  `scope_paths` until an `execution-plan.json` exists and `plan-reviewed --verdict APPROVE` is
+  stamped. Today the skill states "the orchestrator authors no implementation code" in prose only,
+  and prose did not hold. A deterministic rail would have.
+- **Second proposal:** make the deviation self-reporting. If the orchestrator does implement
+  inline, require it to say so in the same message, unprompted — the operator should never be the
+  detection mechanism for a skipped phase.
+
+### Follow-up: the concrete cost of that skip (same run, measured)
+
+- **Outcome:** 7 adversary re-gate rounds, 6 of them returning HIGH, ending in a full revert of the
+  work those rounds were spent on. The feature itself (model selection) was stable from round 2.
+- **What actually drifted:** the delivery redesigned the Worker->Durable Object turn-handoff slot
+  protocol. That subsystem was never in issue #56's scope (`empresa_llm_settings`, the settings
+  API, the LLM config UI, `defineAgent`). It was pulled in because the final adversary found
+  PRE-EXISTING defects there, and with no plan there was no boundary to say no.
+- **The mechanism that would have stopped it, precisely:** `scope_paths`. The planner writes them
+  and the executor is confined to them, so touching `turn-context-store.ts` would have been a
+  visible, reviewable decision instead of silent drift — and `plan-reviewer` is exactly the role
+  that asks "why is this delivery redesigning the turn handoff?".
+- **Why the tests did not catch it:** no freeze. Tests were written alongside the code by the same
+  actor, so they encoded the author's mental model rather than pinning behaviour first. The model
+  was WRONG (it assumed a Flue submission ends when the Worker's fetch ends; the submission is
+  durable and outlives it). Three mutually contradictory slot designs each shipped a green suite.
+- **Sharpened proposal (supersedes the generic one above):** the orchestrator write-rail should key
+  on `scope_paths`, not just on plan existence — deny a main-loop `Edit`/`Write` to any path OUTSIDE
+  the approved plan's `scope_paths`, so scope drift is denied at the tool boundary rather than
+  discovered seven review rounds later. Pair it with: an adversary finding in a file outside
+  `scope_paths` becomes a FOLLOW-UP ISSUE by default, never an in-PR fix, unless the operator
+  explicitly widens the scope.
