@@ -1,0 +1,260 @@
+/**
+ * Locked Flue 2.0.3 build wiring: exact dependency pins, Vite plugin composition order,
+ * wrangler.jsonc no longer authoring the Flue-owned surface (main/DO binding names), the
+ * DO class migration staying append-only through the FlueRegistry/FlueGestaoBotAgent → new
+ * class transition, and the deploy script reverting to plain `wrangler deploy`.
+ * Hermetic file reads only; no network.
+ */
+import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(__dirname, "..");
+const PACKAGE_JSON_PATH = resolve(ROOT, "package.json");
+const WRANGLER_JSONC_PATH = resolve(ROOT, "wrangler.jsonc");
+const VITE_CONFIG_PATH = resolve(ROOT, "vite.config.ts");
+const DEPLOY_GESTAO_SCRIPT_PATH = resolve(ROOT, "scripts/deploy-gestao.mjs");
+
+/** @description Exact versions pinned for the Flue 2.0.3 build/runtime stack (no caret/tilde). */
+const FLUE2_EXACT_PINS = {
+  "@flue/runtime": "2.0.3",
+  "@flue/cli": "2.0.3",
+  "@flue/vite": "2.0.3",
+  valibot: "1.4.2",
+};
+
+/**
+ * @description Strip // and block comments from JSONC so JSON.parse can read wrangler.jsonc.
+ */
+function parseJsonc(raw) {
+  const stripped = raw
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  return JSON.parse(stripped);
+}
+
+/**
+ * @description Ordered list of every DO migration entry declared in wrangler.jsonc, combining
+ * the top-level `migrations` array with a `durable_objects.migrations` array if present, in
+ * declaration order — order matters for the append-only assertion below.
+ */
+function collectOrderedMigrationEntries(wrangler) {
+  const entries = [];
+  if (Array.isArray(wrangler.migrations)) {
+    entries.push(...wrangler.migrations);
+  }
+  const durableObjects = wrangler.durable_objects;
+  if (
+    durableObjects &&
+    typeof durableObjects === "object" &&
+    Array.isArray(durableObjects.migrations)
+  ) {
+    entries.push(...durableObjects.migrations);
+  }
+  return entries;
+}
+
+// ─── lt-flue2-exact-pins ────────────────────────────────────────────────────
+
+/**
+ * @description package.json pins @flue/runtime, @flue/cli, @flue/vite and valibot to exact
+ * 2.0.3-era versions (no caret/tilde), pins @earendil-works/pi-ai to an exact 0.83.0 in
+ * dependencies, and no longer declares the superseded 'agents' package anywhere.
+ */
+test("lt-flue2-exact-pins: @flue/runtime, @flue/cli, @flue/vite 2.0.3; pi-ai 0.83.0; agents removed", () => {
+  const pkg = JSON.parse(readFileSync(PACKAGE_JSON_PATH, "utf8"));
+  const deps = pkg.dependencies ?? {};
+  const devDeps = pkg.devDependencies ?? {};
+
+  for (const [name, expected] of Object.entries(FLUE2_EXACT_PINS)) {
+    const version = deps[name] ?? devDeps[name];
+    assert.equal(
+      version,
+      expected,
+      `${name} must be pinned to exactly ${expected} (no ^ or ~ range), got ${JSON.stringify(version)}`,
+    );
+  }
+
+  assert.equal(
+    deps["@earendil-works/pi-ai"],
+    "0.83.0",
+    `@earendil-works/pi-ai must be declared in dependencies as an exact pin '0.83.0', got ${JSON.stringify(deps["@earendil-works/pi-ai"])}`,
+  );
+
+  assert.equal(
+    Object.hasOwn(deps, "agents"),
+    false,
+    "the 'agents' package must be absent from dependencies — superseded by @flue/* in 2.0.3",
+  );
+  assert.equal(
+    Object.hasOwn(devDeps, "agents"),
+    false,
+    "the 'agents' package must be absent from devDependencies — superseded by @flue/* in 2.0.3",
+  );
+});
+
+// ─── lt-flue2-vite-plugin-order ─────────────────────────────────────────────
+
+/**
+ * @description vite.config.ts registers the flue() plugin before the cloudflare() plugin, and
+ * wires cloudflare() to Flue's generated worker config via `cloudflare({ config: flueWorkerConfig() })`.
+ */
+test("lt-flue2-vite-plugin-order: flue() before cloudflare({ config: flueWorkerConfig() })", () => {
+  const src = readFileSync(VITE_CONFIG_PATH, "utf8");
+
+  const flueIndex = src.indexOf("flue(");
+  const cloudflareIndex = src.indexOf("cloudflare(");
+
+  assert.ok(flueIndex >= 0, "vite.config.ts must call flue(...) as a Vite plugin");
+  assert.ok(cloudflareIndex >= 0, "vite.config.ts must call cloudflare(...) as a Vite plugin");
+  assert.ok(
+    flueIndex < cloudflareIndex,
+    `flue() must be registered before cloudflare() in vite.config.ts (flue at index ${flueIndex}, cloudflare at index ${cloudflareIndex})`,
+  );
+
+  assert.ok(
+    src.includes("cloudflare({ config: flueWorkerConfig() })"),
+    "vite.config.ts must call cloudflare({ config: flueWorkerConfig() }) so the Cloudflare plugin consumes Flue's generated worker config",
+  );
+});
+
+// ─── lt-flue2-wrangler-no-authored-flue-surface ────────────────────────────
+
+/**
+ * @description wrangler.jsonc no longer authors the worker entry (`main`) or any FLUE_-prefixed
+ * durable object binding name — that surface is generated by Flue 2.0.3 — while the ASSETS
+ * binding and its run_worker_first boolean flag remain intact.
+ */
+test("lt-flue2-wrangler-no-authored-flue-surface: no main, no FLUE_ binding names, ASSETS intact", () => {
+  const wrangler = parseJsonc(readFileSync(WRANGLER_JSONC_PATH, "utf8"));
+
+  assert.equal(
+    Object.hasOwn(wrangler, "main"),
+    false,
+    "wrangler.jsonc must not declare a 'main' worker entry — Flue 2.0.3 owns that generated surface",
+  );
+
+  const bindings = wrangler.durable_objects?.bindings ?? [];
+  assert.ok(
+    Array.isArray(bindings),
+    "durable_objects.bindings must be an array when present",
+  );
+  for (const binding of bindings) {
+    const name =
+      binding && typeof binding === "object" ? binding.name : undefined;
+    assert.equal(
+      typeof name === "string" && name.startsWith("FLUE_"),
+      false,
+      `durable_objects binding name must not start with 'FLUE_' (got ${JSON.stringify(name)}) — that surface is generated by Flue, not authored in this repo`,
+    );
+  }
+
+  assert.equal(
+    wrangler.assets?.binding,
+    "ASSETS",
+    "assets.binding must remain 'ASSETS'",
+  );
+
+  assert.equal(
+    typeof wrangler.assets?.run_worker_first,
+    "boolean",
+    `assets.run_worker_first must be a boolean, got type ${typeof wrangler.assets?.run_worker_first}`,
+  );
+  assert.equal(
+    wrangler.assets?.run_worker_first,
+    true,
+    "assets.run_worker_first must remain true",
+  );
+});
+
+// ─── lt-flue2-do-migration-append-only ─────────────────────────────────────
+
+/**
+ * @description The original v2 migration ({ tag: 'v2', new_sqlite_classes: ['FlueRegistry',
+ * 'FlueGestaoBotAgent'] }) stays present and unchanged, a later migration entry deletes both
+ * FlueRegistry and FlueGestaoBotAgent via deleted_classes, and a new_sqlite_classes entry at or
+ * after that deletion introduces GESTAO_BOT_DO_CLASS — imported from the identity module, never
+ * hardcoded, so wrangler and the identity module cannot silently drift apart.
+ */
+test("lt-flue2-do-migration-append-only: v2 unchanged, later delete + GESTAO_BOT_DO_CLASS add", async () => {
+  const wrangler = parseJsonc(readFileSync(WRANGLER_JSONC_PATH, "utf8"));
+  const { GESTAO_BOT_DO_CLASS } = await import(
+    "../src/worker/agent/gestao-bot-identity.ts"
+  );
+  assert.equal(
+    typeof GESTAO_BOT_DO_CLASS,
+    "string",
+    "gestao-bot-identity.ts must export GESTAO_BOT_DO_CLASS as a string",
+  );
+
+  const entries = collectOrderedMigrationEntries(wrangler);
+
+  const originalEntry = entries.find(
+    (entry) =>
+      entry && typeof entry === "object" && entry.tag === "v2",
+  );
+  assert.ok(
+    originalEntry,
+    "the original v2 migration entry must still be present in wrangler.jsonc migrations",
+  );
+  assert.deepEqual(
+    originalEntry,
+    { tag: "v2", new_sqlite_classes: ["FlueRegistry", "FlueGestaoBotAgent"] },
+    "the original v2 migration entry must remain UNCHANGED",
+  );
+  const originalIndex = entries.indexOf(originalEntry);
+
+  const deletionIndex = entries.findIndex(
+    (entry, index) =>
+      index > originalIndex &&
+      entry &&
+      typeof entry === "object" &&
+      Array.isArray(entry.deleted_classes) &&
+      entry.deleted_classes.includes("FlueRegistry") &&
+      entry.deleted_classes.includes("FlueGestaoBotAgent"),
+  );
+  assert.ok(
+    deletionIndex > originalIndex,
+    "a LATER migration entry must list deleted_classes containing both 'FlueRegistry' and 'FlueGestaoBotAgent'",
+  );
+
+  const additionIndex = entries.findIndex(
+    (entry, index) =>
+      index >= deletionIndex &&
+      entry &&
+      typeof entry === "object" &&
+      Array.isArray(entry.new_sqlite_classes) &&
+      entry.new_sqlite_classes.includes(GESTAO_BOT_DO_CLASS),
+  );
+  assert.ok(
+    additionIndex >= deletionIndex,
+    `a new_sqlite_classes entry at or after the deletion migration must include GESTAO_BOT_DO_CLASS (${JSON.stringify(GESTAO_BOT_DO_CLASS)}, imported from gestao-bot-identity.ts)`,
+  );
+});
+
+// ─── lt-flue2-deploy-script-is-plain-wrangler ──────────────────────────────
+
+/**
+ * @description package.json scripts.deploy is exactly 'wrangler deploy' — no --config flag, no
+ * flue build step, no reference to the retired scripts/deploy-gestao.mjs wrapper — and that
+ * wrapper file no longer exists on disk.
+ */
+test("lt-flue2-deploy-script-is-plain-wrangler: scripts.deploy === 'wrangler deploy', no deploy-gestao.mjs", () => {
+  const pkg = JSON.parse(readFileSync(PACKAGE_JSON_PATH, "utf8"));
+  const scripts = pkg.scripts ?? {};
+
+  assert.equal(
+    scripts.deploy,
+    "wrangler deploy",
+    `package.json scripts.deploy must be exactly 'wrangler deploy' (no --config, no flue build, no deploy-gestao.mjs reference), got ${JSON.stringify(scripts.deploy)}`,
+  );
+
+  assert.equal(
+    existsSync(DEPLOY_GESTAO_SCRIPT_PATH),
+    false,
+    "scripts/deploy-gestao.mjs must not exist — the custom deploy wrapper is retired in favor of plain wrangler deploy",
+  );
+});
