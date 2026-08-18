@@ -190,8 +190,11 @@ function expandScriptChain(scripts, name, seen = new Set()) {
  */
 function stripNonCommandText(text) {
   return text
-    .replace(/\/\*[\s\S]*?\*\//g, " ") // block comments
-    .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ") // line comments (not protocol-relative URLs)
+    // Require the `/*` to start a token, so a glob like "src/**/*" or a regex literal cannot open
+    // a runaway "comment" that swallows the real command and fails the test for the wrong reason.
+    .replace(/(^|[\s;{}(])\/\*[\s\S]*?\*\//g, "$1 ")
+    // `[^:/]` (not `[^:]`) so the third slash of file:/// cannot open a "line comment" either.
+    .replace(/(^|[^:/])\/\/[^\n]*/g, "$1 ")
     .replace(/console\.\w+\([\s\S]*?\)/g, " "); // log strings that merely NAME the step
 }
 
@@ -206,8 +209,16 @@ function includesFlueBuild(text) {
   const code = stripNonCommandText(text);
   // shell: `flue build ...` / `npx flue build ...`
   if (/(^|[\s&|;('"`])(npx\s+)?flue\s+build\b/.test(code)) return true;
-  // argv array: run('npx', ['flue', 'build', ...])
-  if (/["']flue["']\s*,\s*["']build["']/.test(code)) return true;
+  // argv array, ANCHORED ON THE SPAWN: `run('npx', ['flue', 'build', ...])`. Matching the bare
+  // adjacency of the two strings would also match `const STEPS = ['flue', 'build']` or a help
+  // text — i.e. it would go green again with the real command deleted.
+  if (
+    /\b(run|spawn|spawnSync|exec|execFile|execFileSync|execSync)\s*\(\s*["'][^"']*(npx|node|flue)[^"']*["']\s*,\s*\[[^\]]*["']flue["']\s*,\s*["']build["']/.test(
+      code,
+    )
+  ) {
+    return true;
+  }
   if (/@flue\/cli\b[\s\S]{0,40}\bbuild\b/.test(code)) return true;
   return false;
 }

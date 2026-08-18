@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   pull_request:
   push:
@@ -13,6 +16,9 @@ concurrency:
 
 jobs:
   check:
+    # Pin the status-check name so a future rename of the job id cannot silently detach a branch
+    # protection rule that requires it.
+    name: check
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -36,4 +42,14 @@ jobs:
         run: npx tsc -b
 
       - name: Tests
-        run: npm test
+        # `node --test` exits 0 when it discovers ZERO files — a green run that verified nothing.
+        # The floor is a discovery tripwire, not a coverage target: it only has to be far below the
+        # real count and far above zero.
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.txt
+          passed=$(sed -n 's/^# pass \([0-9]\+\)$/\1/p' test-output.txt | tail -1)
+          if [ -z "$passed" ] || [ "$passed" -lt 200 ]; then
+            echo "::error::test discovery looks broken — only '${passed:-none}' tests passed"
+            exit 1
+          fi
