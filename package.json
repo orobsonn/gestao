@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build && node scripts/fix-generated-wrangler-d1.mjs",
+    "build": "tsc -b && vite build",
     "clean:deploy-redirect": "node -e \"require('node:fs').rmSync('.wrangler/deploy',{recursive:true,force:true})\"",
     "predeploy": "npm run clean:deploy-redirect && npm run cf-typegen && npm run build",
     "deploy": "wrangler deploy",

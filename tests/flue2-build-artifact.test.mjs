@@ -155,10 +155,24 @@ test(
       generatedDbBinding,
       `generated wrangler.json must carry the authored D1 binding named 'DB', got ${JSON.stringify(generated.d1_databases)}`,
     );
-    assert.deepEqual(
-      generatedDbBinding,
-      authoredDbBinding,
-      `generated wrangler.json's 'DB' d1_databases entry must pass through UNCHANGED from the authored wrangler.jsonc — expected ${JSON.stringify(authoredDbBinding)}, got ${JSON.stringify(generatedDbBinding)}`,
+    // migrations_dir is deliberately NOT compared: @cloudflare/vite-plugin rewrites it relative to
+    // the worker output directory, and nothing reads it from the generated config —
+    // npm run db:migrate / db:migrate:local run `wrangler d1 migrations apply` against the authored
+    // root wrangler.jsonc, and `wrangler deploy` never reads migrations_dir.
+    assert.equal(
+      generatedDbBinding.binding,
+      authoredDbBinding.binding,
+      `generated wrangler.json's 'DB' d1_databases entry 'binding' must match the authored value — expected ${JSON.stringify(authoredDbBinding.binding)}, got ${JSON.stringify(generatedDbBinding.binding)}`,
+    );
+    assert.equal(
+      generatedDbBinding.database_name,
+      authoredDbBinding.database_name,
+      `generated wrangler.json's 'DB' d1_databases entry 'database_name' must match the authored value — expected ${JSON.stringify(authoredDbBinding.database_name)}, got ${JSON.stringify(generatedDbBinding.database_name)}`,
+    );
+    assert.equal(
+      generatedDbBinding.database_id,
+      authoredDbBinding.database_id,
+      `generated wrangler.json's 'DB' d1_databases entry 'database_id' must match the authored value — expected ${JSON.stringify(authoredDbBinding.database_id)}, got ${JSON.stringify(generatedDbBinding.database_id)}`,
     );
   },
 );
