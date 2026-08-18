@@ -1413,5 +1413,39 @@ test("lt-tools-batch-latch-after-empresa-switch: switch blocks sibling writes in
     "reverse switch result must be terminal",
   );
 
+  // Parallel batch: promises start in the same tick; the write must abort.
+  const batchTools = buildTools(db, {
+    empresa_id: empA,
+    expert_id: null,
+    actor_user_id: actorId,
+    surface: "dm",
+  });
+  const pSwitch = getTool(batchTools, "definir_empresa_ativa").run({
+    data: { empresa_id: empB },
+  });
+  const pCreate = getTool(batchTools, "criar_tarefa").run({
+    data: { titulo: "batch paralelo", campanha_id: campA.id },
+  });
+  const [parallelSwitchResult, createResult] = await Promise.all([pSwitch, pCreate]);
+  assert.ok(
+    isTerminalStopResult(parallelSwitchResult),
+    "parallel switch result must be terminal",
+  );
+  const batchPayload = payloadOf(createResult);
+  assert.equal(
+    /** @type {Record<string, unknown>} */ (batchPayload).ok,
+    false,
+    "parallel criar_tarefa must resolve ok:false",
+  );
+  assert.equal(
+    /** @type {Record<string, unknown>} */ (batchPayload).error,
+    "A empresa ativa mudou neste turno. Refaça o pedido.",
+  );
+  assert.equal(
+    getTarefaByTitulo(db, "batch paralelo"),
+    undefined,
+    "no tarefa row must exist for parallel batch",
+  );
+
   db.close();
 });
