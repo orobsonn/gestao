@@ -172,6 +172,7 @@ export function createGestaoBotTools(
   // still execute against the OLD empresa closure and write into the wrong tenant.
   // This per-render latch blocks any further mutating tool in the same batch after a switch.
   let activeEmpresaSwitched = false
+  let empresaSwitchInFlight = false
 
   // Common helpers
   async function ensureFk(): Promise<void> {
@@ -263,8 +264,8 @@ export function createGestaoBotTools(
         campanhaId: v.optional(v.string()),
       }),
       run: async ({ data }) => {
-      if (activeEmpresaSwitched) {
-        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
+      if (empresaSwitchInFlight || activeEmpresaSwitched) {
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' }, terminate: true }
       }
       await ensureFk()
       const titulo = String(data.titulo ?? '').trim()
@@ -398,8 +399,8 @@ export function createGestaoBotTools(
         titulo: v.optional(v.string()),
       }),
       run: async ({ data }) => {
-      if (activeEmpresaSwitched) {
-        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
+      if (empresaSwitchInFlight || activeEmpresaSwitched) {
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' }, terminate: true }
       }
       await ensureFk()
       const id = String(data.id ?? data.tarefa_id ?? '')
@@ -471,8 +472,8 @@ export function createGestaoBotTools(
         tarefa_id: v.optional(v.string()),
       }),
       run: async ({ data }) => {
-      if (activeEmpresaSwitched) {
-        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
+      if (empresaSwitchInFlight || activeEmpresaSwitched) {
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' }, terminate: true }
       }
       await ensureFk()
       const id = String(data.id ?? data.tarefa_id ?? '')
@@ -510,8 +511,8 @@ export function createGestaoBotTools(
         message: v.optional(v.string()),
       }),
       run: async ({ data }) => {
-      if (activeEmpresaSwitched) {
-        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
+      if (empresaSwitchInFlight || activeEmpresaSwitched) {
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' }, terminate: true }
       }
       await ensureFk()
       const userId = String(data.user_id ?? data.userId ?? '')
@@ -607,22 +608,32 @@ export function createGestaoBotTools(
           empresaId: v.optional(v.string()),
         }),
         run: async ({ data }) => {
+        if (empresaSwitchInFlight || activeEmpresaSwitched) {
+          return { output: { ok: false, error: 'Já houve uma troca de empresa neste turno. Refaça o pedido.' }, terminate: true }
+        }
+        empresaSwitchInFlight = true
         await ensureFk()
         const targetEmpresaId = String(
           data.empresa_id ?? data.empresaId ?? '',
         )
-        if (!targetEmpresaId) return { output: { ok: false, error: 'empresa_id obrigatório' } }
+        if (!targetEmpresaId) {
+          empresaSwitchInFlight = false
+          return { output: { ok: false, error: 'empresa_id obrigatório' } }
+        }
         const same = await isSameEmpresaMember(
           db,
           targetEmpresaId,
           closureActorId,
         )
-        if (!same) return { output: { ok: false, error: 'Empresa não encontrada' } }
+        if (!same) {
+          empresaSwitchInFlight = false
+          return { output: { ok: false, error: 'Empresa não encontrada' } }
+        }
         const current = await Promise.resolve(
           db.prepare(`SELECT empresa_id FROM telegram_dm_active_empresa WHERE user_id = ?`).get(closureActorId),
         )
         if ((current as any)?.empresa_id === targetEmpresaId) {
-          activeEmpresaSwitched = true
+          empresaSwitchInFlight = false
           return { output: { empresa_id: targetEmpresaId }, terminate: true }
         }
         await Promise.resolve(
