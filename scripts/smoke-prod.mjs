@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 /**
- * @description Production smoke for the deployed Worker. Three checks: SPA root (200), API auth
- * probe (401), and an agent route hit WITHOUT the internal secret header (403). The third check is
+ * @description Production smoke for the deployed Worker. Four checks: SPA root (200), API auth
+ * probe (401), an agent route hit WITHOUT the internal secret header (403), and the agent
+ * conversation-history route hit WITHOUT the internal secret header (403). The agent checks are
  * the whole point — a generic HTTP smoke would see the SPA's 200 and call the deploy healthy while
  * the agent routes had actually been swallowed by the ASSETS catch-all (which answers 200 instead
  * of the 403 the guard is supposed to return).
+ *
+ * A 403 on the agent routes does not distinguish "guard configured" from "secret absent" — the
+ * guard fails closed either way.
  */
 import { fileURLToPath } from 'node:url';
 
@@ -57,6 +61,13 @@ export async function runSmoke({ baseUrl, fetchImpl }) {
       name: 'agent-route-guarded',
       url: `${base}/agents/gestao-bot/smoke-${Date.now()}`,
       method: 'POST',
+      expected: 403,
+      fetchImpl,
+    }),
+    runCheck({
+      name: 'agent-history-guarded',
+      url: `${base}/agents/gestao-bot/smoke-${Date.now()}`,
+      method: 'GET',
       expected: 403,
       fetchImpl,
     }),

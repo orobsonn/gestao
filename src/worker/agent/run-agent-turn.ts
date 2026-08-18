@@ -9,10 +9,15 @@
  * never the raw (possibly absent) field, which against a `TEXT PRIMARY KEY NOT NULL` column
  * would coerce to the literal string 'undefined' and mute every later solo reply.
  *
+ * The `submission-settled` listener filters by `chunk.submissionId === receipt.submissionId`
+ * because `read()` starts at offset `-1` and replays every settlement in the instance's
+ * history; without the filter, a later coalesced settlement could overwrite this turn's key.
+ *
  * Three distinct branches: a rejected read (AgentRunError / local timeout) resolves the
  * existing pt-br SAFE_REPLY with a null key so an apology is never suppressed by the send
- * guard; a settled empty text (a tool that returned terminate: true) resolves a pt-br
- * confirmation — NEVER SAFE_REPLY; otherwise the resolved text and key.
+ * guard; a settled empty or whitespace-only text (e.g. a tool that returned terminate: true,
+ * or a model reply of only spaces) resolves a pt-br confirmation — NEVER SAFE_REPLY; otherwise
+ * the resolved text and key.
  */
 
 export interface BuildIdentityInput {
@@ -52,6 +57,7 @@ export interface AgentTurnReceipt {
  */
 export interface AgentTurnStreamChunk {
   type: string
+  submissionId?: string
   answeredBySubmissionId?: string
   [key: string]: unknown
 }
@@ -120,13 +126,17 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
     const reply = await input.port.read(receipt, {
       signal: AbortSignal.timeout(TURN_READ_TIMEOUT_MS),
       onEvent: (chunk) => {
-        if (chunk && chunk.type === 'submission-settled') {
+        if (
+          chunk &&
+          chunk.type === 'submission-settled' &&
+          chunk.submissionId === receipt.submissionId
+        ) {
           settled.chunk = chunk
         }
       },
     })
     const key = settled.chunk?.answeredBySubmissionId ?? receipt.submissionId
-    if (!reply.text) {
+    if (!reply.text.trim()) {
       return { text: EMPTY_TEXT_CONFIRMATION, key }
     }
     return { text: reply.text, key }

@@ -268,7 +268,7 @@ export function createGestaoBotTools(
       }),
       run: async ({ data }) => {
       if (empresaSwitchInFlight || activeEmpresaSwitched) {
-        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' }, terminate: true }
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
       }
       await ensureFk()
       const titulo = String(data.titulo ?? '').trim()
@@ -403,7 +403,7 @@ export function createGestaoBotTools(
       }),
       run: async ({ data }) => {
       if (empresaSwitchInFlight || activeEmpresaSwitched) {
-        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' }, terminate: true }
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
       }
       await ensureFk()
       const id = String(data.id ?? data.tarefa_id ?? '')
@@ -476,7 +476,7 @@ export function createGestaoBotTools(
       }),
       run: async ({ data }) => {
       if (empresaSwitchInFlight || activeEmpresaSwitched) {
-        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' }, terminate: true }
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
       }
       await ensureFk()
       const id = String(data.id ?? data.tarefa_id ?? '')
@@ -515,7 +515,7 @@ export function createGestaoBotTools(
       }),
       run: async ({ data }) => {
       if (empresaSwitchInFlight || activeEmpresaSwitched) {
-        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' }, terminate: true }
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
       }
       await ensureFk()
       const userId = String(data.user_id ?? data.userId ?? '')
