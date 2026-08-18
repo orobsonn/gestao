@@ -26,6 +26,7 @@ D1 SQL migrations for the gestao multi-tenant schema.
 | `0007_telegram_agent_support.sql` | Forward: `telegram_webhook_updates` (update_id PK for dedup), `telegram_dm_active_empresa` (user_id PK, empresa_id FK, pending_boundary 0|1), `telegram_agent_turn_context` (turn_token PK, ciphertext+iv NOT NULL, composite nullable expert FK). |
 | `0008_empresa_llm_model.sql` | Forward: nullable provider-native `model_id` on `empresa_llm_settings`; legacy settings remain null. |
 | `0009_telegram_turn_model.sql` | Forward: nullable **provider-namespaced** `model_id` on `telegram_agent_turn_context` (e.g. `openai/gpt-4o-mini`) — note this is the OPPOSITE format from `0008`, which stores the provider-native id. Legacy contexts remain compatible. |
+| `0010_telegram_agent_reply_send_guard.sql` | Forward: `telegram_agent_reply_sends` (PK `answered_by_submission_id`, `created_at` timestamp) for duplicate reply guard. |
 
 ### Hermetic openDb rule (tests + local)
 
