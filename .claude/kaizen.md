@@ -1006,3 +1006,71 @@ manual-merge the queue.
   discovered seven review rounds later. Pair it with: an adversary finding in a file outside
   `scope_paths` becomes a FOLLOW-UP ISSUE by default, never an in-PR fix, unless the operator
   explicitly widens the scope.
+
+### 2026-08-18 — brief-serializer.mjs: crashes when a task slice omits `criterion_refs`
+
+- **Observed:** `references/brief-serializer.mjs` destructures `const { spec, resolved_judgments,
+  scope_paths, criterion_refs, locked_tests } = taskSlice;` then unconditionally reads
+  `criterion_refs.length` to build the `## Acceptance (criterion_refs)` section. A task slice that
+  omits the field (rather than shipping an empty array) yields `undefined`, and `.length` throws a
+  `TypeError` — the brief for that task never gets written, and the dispatch it feeds fails opaquely.
+  Hit during `flue-2-migration` on a task slice authored without an explicit `criterion_refs: []`.
+- **Proposed change:** default the destructure — `criterion_refs = []` — so an omitted field
+  degrades to "no acceptance refs listed" instead of crashing the serializer. Same defensive default
+  is worth auditing on the other array-typed taskSlice fields the module destructures
+  (`scope_paths`, `locked_tests`) for the same omission-vs-empty-array gap.
+
+### 2026-08-18 — mark.mjs: markers silently ignored when their stdout is redirected
+
+- **Observed:** `mark.mjs` "echoes a single JSON line to stdout with exit 0" and the `stamp-triage`
+  hook observes that stdout to stamp the corresponding flag into `gate-state.json` (per the module's
+  own header doc). When a marker command is chained with a stdout redirect (e.g. into a log file, or
+  piped through another command that consumes stdout) inside the same Bash invocation, the JSON
+  marker line never reaches the hook's observation point — the gate-state flag is never stamped,
+  even though `mark.mjs` itself exits 0. On `flue-2-migration` this produced a blocked dispatch: the
+  orchestrator believed a marker had fired (exit 0, no error) but the gate never advanced.
+- **Proposed change:** either (a) have `mark.mjs` ALSO write its JSON line to a fixed, redirect-proof
+  sink (a file path derived from `feature_id`/`session_id`, not stdout) that `stamp-triage` can read
+  independently of how the invoking shell command redirected stdout, or (b) have the orchestrating
+  skill explicitly warn against redirecting a `mark.mjs` invocation's stdout, with a self-check that
+  re-reads `gate-state.json` immediately after every marker call and fails loudly if the expected
+  flag is absent — turning a silent stall into an immediate, attributable error.
+
+### 2026-08-18 — spawn-hand/descriptor-emitter: chaining a dispatch in the same shell command as the descriptor write can race the descriptor's write
+
+- **Observed:** `descriptor-emitter.mjs`'s CLI entry `writeFileSync(args.out, ...)`s the descriptor
+  synchronously, then a `spawn-hand` dispatch reads that same path as its input. Both are separate
+  Node processes; when the two are chained in the same shell command in a way that does not
+  guarantee the writer's process has fully exited before the reader starts (e.g. backgrounding one
+  side, or any non-`&&` sequencing), the dispatch can read a stale or partially-written descriptor.
+  This is exactly the kind of hazard `#361`'s design (never hand-type the descriptor, always emit it
+  fresh) tries to close on the CONTENT side, but the two-process handoff still leaves a TOCTOU
+  window on the FILE side.
+- **Proposed change:** document (and, where possible, enforce via the skill's own dispatch helper)
+  that `descriptor-emitter` and the `spawn-hand` call that consumes its `--out` path must run as two
+  sequential steps in the SAME tool call chain with an explicit exit-code check in between — never
+  parallel/backgrounded — or have `spawn-hand` itself shell out to `descriptor-emitter` internally
+  (in-process, same event loop) instead of relying on the orchestrator to sequence two independent
+  CLI invocations correctly.
+
+### 2026-08-18 — canonical-critical-classes / concurrency oracle: "sequential test cannot verify a parallel guarantee" deserves an explicit sharpening of the concurrency/race category
+
+- **Observed:** `flue-2-migration` cost 3 re-gate rounds to land a tool-batch guard correctly. Flue
+  2.x runs a tool batch through `Promise.all` (parallel, not sequential), so a guard flag protecting
+  against a dangerous ordering must be armed as the FIRST synchronous statement before any `await`.
+  The FIRST version of the locked test for this guard `await`ed the guarded write to completion
+  before invoking the sibling call — i.e. it tested the SEQUENTIAL case, not the parallel one — and
+  it passed green against a latch that guarded nothing, because a real parallel batch never
+  exercises that ordering. This is a concrete, reproducible instance of the general "circular
+  verification" failure mode, specific to concurrency oracles: an oracle for a parallel-execution
+  guarantee that itself awaits step N before starting step N+1 cannot ever falsify the guard it is
+  meant to test.
+- **Proposed change:** `canonical-critical-classes`' category 3 (concurrency/race) already says "a
+  race is not testable away reliably — judge the design, never accept a green happy-path test as
+  proof it is gone." Sharpen this with the concrete, checkable rule surfaced here: for any test
+  whose subject is a guarantee about PARALLEL execution (a batch, a fan-out, concurrent callers),
+  the adversary/compliance checklist should explicitly ask "does the oracle START every concurrent
+  branch in the same turn of the event loop (e.g. via `Promise.all` / unawaited kick-off) before
+  awaiting any of them — or does it sequentially `await` one branch before starting the next?" A
+  test that does the latter cannot verify a parallel guarantee and should be flagged as vacuous
+  regardless of whether it is green.

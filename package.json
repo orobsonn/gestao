@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "deploy": "node scripts/deploy-gestao.mjs",
+    "clean:deploy-redirect": "node -e \"require('node:fs').rmSync('.wrangler/deploy',{recursive:true,force:true})\"",
+    "predeploy": "npm run clean:deploy-redirect && npm run cf-typegen && npm run build",
+    "deploy": "wrangler deploy",
     "cf-typegen": "wrangler types",
     "db:migrate:local": "wrangler d1 migrations apply gestao-db --local",
     "db:migrate": "wrangler d1 migrations apply gestao-db --remote",
@@ -47,23 +49,24 @@
     "sonner": "^2.0.6",
     "tailwind-merge": "^3.3.1",
     "zod": "^4.1.13",
-    "@flue/runtime": "1.0.0-beta.9",
-    "@flue/cli": "1.0.0-beta.9",
-    "agents": "0.14.5",
+    "@flue/runtime": "2.0.3",
+    "@flue/cli": "2.0.3",
+    "@earendil-works/pi-ai": "0.83.0",
     "valibot": "1.4.2"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.15.3",
+    "@cloudflare/vite-plugin": "^1.53.0",
+    "@flue/vite": "2.0.3",
     "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.1.17",
     "@types/node": "^26.1.2",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.1",
+    "@vitejs/plugin-react": "^6.0.5",
     "tailwindcss": "^4.1.17",
     "tw-animate-css": "^1.3.5",
     "typescript": "^5.8.3",
-    "vite": "^6.0.0",
-    "wrangler": "^4.70.0"
+    "vite": "^8.2.1",
+    "wrangler": "^4.124.0"
   }
 }

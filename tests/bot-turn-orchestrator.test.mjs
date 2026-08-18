@@ -2,23 +2,18 @@
  * Locked bot-turn-orchestrator contract — handleBotTurn gates before agent.
  * Hermetic: node:sqlite :memory:, PRAGMA foreign_keys=ON, every migrations/*.sql sorted.
  *
- * Expected production export (executor creates):
+ * Expected production export:
  *   handleBotTurn from ../src/worker/services/bot-turn-orchestrator.ts
  *
  * Input shape:
- *   handleBotTurn({
- *     db,
- *     update, // telegram update fragment
- *     botUsername,
- *     llmKeyEncryptionSecret,
- *     botToken?,
- *     runAgentTurn, // injectable mock
- *     insertTurnContext?, // optional inject; default real
- *     send?,
- *   }) → { reply: string }
+ *   handleBotTurn({ db, update, botUsername, llmKeyEncryptionSecret, runAgentTurn })
+ *     → { reply: string, answeredBySubmissionId: string | null }
  *
- * Does NOT call createGestaoBotTools. Writes turn row then runAgentTurn({sessionId,message,turnToken}).
- * apiKey only via insertTurnContext / turn-token path — never Flue JSON body.
+ * The D1 turn-context bridge (telegram_agent_turn_context) is gone (migration 0011). The turn's
+ * non-secret facts ride the dispatched SIGNAL instead:
+ *   runAgentTurn({ sessionId, message: { kind: 'signal', type: 'telegram.message', body, attributes } })
+ * `attributes` is a closed string-to-string map — never the tenant's LLM API key. Does NOT call
+ * createGestaoBotTools (that lives inside the Durable Object, not the orchestrator).
  */
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -26,7 +21,6 @@ import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { insertTurnContext as realInsertTurnContext } from "../src/worker/agent/turn-context-store.ts";
 import { encryptLlmApiKey } from "../src/worker/services/llm-key-crypto.ts";
 import {
   getDmActiveEmpresa,
@@ -318,14 +312,22 @@ function dmTextUpdate(opts) {
 }
 
 /**
- * @description Count rows in telegram_agent_turn_context.
+ * @description Sum row counts across every table whose name contains "turn" — schema-agnostic
+ * check that the D1 turn-context bridge (or anything shaped like it) never gets a row written.
  * @param {DatabaseSync} db
  */
-function countTurnContext(db) {
-  const row = db
-    .prepare(`SELECT count(*) AS n FROM telegram_agent_turn_context`)
-    .get();
-  return Number(row?.n ?? 0);
+function anyTurnTableRowCount(db) {
+  const tables = db
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%turn%'`,
+    )
+    .all();
+  let total = 0;
+  for (const t of tables) {
+    const row = db.prepare(`SELECT count(*) AS n FROM "${t.name}"`).get();
+    total += Number(row?.n ?? 0);
+  }
+  return total;
 }
 
 /**
@@ -410,37 +412,60 @@ function replyOf(result) {
 }
 
 /**
- * @description Normalize insertTurnContext call args to a plain fields object.
- * @param {unknown[]} callArgs — (db, input) or (input)
+ * @description Extract answeredBySubmissionId from handleBotTurn's return shape
+ * ({ reply, answeredBySubmissionId }) — must be a string or null, never undefined.
+ * @param {unknown} result
  */
-function normalizeInsertArgs(callArgs) {
-  const input =
-    callArgs.length >= 2
-      ? callArgs[1]
-      : callArgs[0] && typeof callArgs[0] === "object" && !("prepare" in /** @type {object} */ (callArgs[0]))
-        ? callArgs[0]
-        : callArgs[1] ?? callArgs[0];
-  assert.ok(input && typeof input === "object", "insertTurnContext input must be object");
-  const o = /** @type {Record<string, unknown>} */ (input);
-  return {
-    empresaId: String(o.empresaId ?? o.empresa_id ?? ""),
-    expertId: o.expertId ?? o.expert_id ?? null,
-    actorUserId: String(o.actorUserId ?? o.actor_user_id ?? o.userId ?? ""),
-    surface: String(o.surface ?? ""),
-    provider: String(o.provider ?? ""),
-    apiKey: o.apiKey ?? o.api_key,
-    message: String(o.message ?? ""),
-    encryptionSecret: o.encryptionSecret ?? o.llmKeyEncryptionSecret,
-    dmBoundaryLine: o.dmBoundaryLine ?? o.dm_boundary_line ?? null,
-  };
+function answeredBySubmissionIdOf(result) {
+  assert.ok(result && typeof result === "object", "handleBotTurn must return object");
+  const key = /** @type {{ answeredBySubmissionId?: unknown }} */ (result)
+    .answeredBySubmissionId;
+  assert.ok(
+    key === null || typeof key === "string",
+    `result.answeredBySubmissionId must be string or null, got: ${JSON.stringify(key)}`,
+  );
+  return /** @type {string | null} */ (key);
+}
+
+/**
+ * @description Extract the dispatched signal object off a captured runAgentTurn call args —
+ * args.message per the flue2 contract: { kind: 'signal', type: 'telegram.message', body, attributes }.
+ * @param {unknown} capturedArgs
+ */
+function dispatchedSignalOf(capturedArgs) {
+  assert.ok(
+    capturedArgs && typeof capturedArgs === "object",
+    "runAgentTurn must be called with an args object",
+  );
+  const message = /** @type {{ message?: unknown }} */ (capturedArgs).message;
+  assert.ok(
+    message && typeof message === "object",
+    "runAgentTurn args.message must be the dispatched signal object",
+  );
+  return /** @type {Record<string, unknown>} */ (message);
+}
+
+/**
+ * @description Extract the `attributes` string-to-string map off a captured runAgentTurn call.
+ * @param {unknown} capturedArgs
+ */
+function dispatchedAttributesOf(capturedArgs) {
+  const signal = dispatchedSignalOf(capturedArgs);
+  const attributes = signal.attributes;
+  assert.ok(
+    attributes && typeof attributes === "object",
+    "dispatched signal must carry an attributes object",
+  );
+  return /** @type {Record<string, unknown>} */ (attributes);
 }
 
 // ─── lt-orch-unlinked-no-agent ─────────────────────────────────────────────
 
 /**
- * @description Mapped topic @mention from unlinked telegram user: no agent, no tarefas insert, no turn_context, pt-br fail-closed reply.
+ * @description Mapped topic @mention from unlinked telegram user: no agent, no tarefas insert,
+ * no row in any turn-shaped table, pt-br fail-closed reply.
  */
-test("lt-orch-unlinked-no-agent: unlinked topic @mention → runAgentTurn=0, no tarefas/turn_context, pt-br reply", async () => {
+test("lt-orch-unlinked-no-agent: unlinked topic @mention → runAgentTurn=0, no tarefas/turn rows, pt-br reply", async () => {
   const db = openDb();
   const emp = seedEmpresa(db, { id: "emp-unlinked-a", nome: "Empresa Unlinked" });
   const expert = seedExpert(db, {
@@ -456,6 +481,7 @@ test("lt-orch-unlinked-no-agent: unlinked topic @mention → runAgentTurn=0, no 
   await seedValidLlm(db, emp.id);
 
   const tarefasBefore = countTarefas(db);
+  const turnRowsBefore = anyTurnTableRowCount(db);
   /** @type {unknown[]} */
   const agentCalls = [];
   const runAgentTurn = async (args) => {
@@ -484,13 +510,18 @@ test("lt-orch-unlinked-no-agent: unlinked topic @mention → runAgentTurn=0, no 
     "no tarefas INSERT must occur",
   );
   assert.equal(
-    countTurnContext(db),
-    0,
-    "no telegram_agent_turn_context row must be inserted",
+    anyTurnTableRowCount(db),
+    turnRowsBefore,
+    "no row must be written to any turn-shaped table",
   );
   assert.ok(
     isNonEmptyPtBr(reply),
     `reply must be non-empty pt-br fail-closed copy, got: ${reply}`,
+  );
+  assert.equal(
+    answeredBySubmissionIdOf(result),
+    null,
+    "a gate copy (no agent call) must resolve a null dedupe key — never suppressed by the send guard",
   );
 
   db.close();
@@ -499,9 +530,10 @@ test("lt-orch-unlinked-no-agent: unlinked topic @mention → runAgentTurn=0, no 
 // ─── lt-orch-invalid-llm-no-agent ──────────────────────────────────────────
 
 /**
- * @description Linked member on mapped topic but empresa LLM status not valid: no agent, no turn row, pt-br LLM copy without secrets.
+ * @description Linked member on mapped topic but empresa LLM status not valid: no agent, no turn
+ * row, pt-br LLM copy without secrets.
  */
-test("lt-orch-invalid-llm-no-agent: linked member + invalid LLM → runAgentTurn=0, no turn_context, pt-br LLM copy, no secrets", async () => {
+test("lt-orch-invalid-llm-no-agent: linked member + invalid LLM → runAgentTurn=0, no turn rows, pt-br LLM copy, no secrets", async () => {
   const db = openDb();
   const emp = seedEmpresa(db, { id: "emp-bad-llm", nome: "Empresa Bad LLM" });
   const expert = seedExpert(db, {
@@ -531,6 +563,7 @@ test("lt-orch-invalid-llm-no-agent: linked member + invalid LLM → runAgentTurn
     status: "invalid",
   });
 
+  const turnRowsBefore = anyTurnTableRowCount(db);
   /** @type {unknown[]} */
   const agentCalls = [];
   const result = await handleBotTurn({
@@ -553,9 +586,9 @@ test("lt-orch-invalid-llm-no-agent: linked member + invalid LLM → runAgentTurn
   const reply = replyOf(result);
   assert.equal(agentCalls.length, 0, "runAgentTurn call count must be 0");
   assert.equal(
-    countTurnContext(db),
-    0,
-    "no turn_context row must be inserted",
+    anyTurnTableRowCount(db),
+    turnRowsBefore,
+    "no row must be written to any turn-shaped table",
   );
   assert.ok(
     isLlmFailClosedPtBr(reply, PLAINTEXT_KEY),
@@ -585,7 +618,7 @@ test("lt-orch-invalid-llm-no-agent: linked member + invalid LLM → runAgentTurn
 /**
  * @description DM linked user with two live memberships and no pin: no agent, no decrypt, list empresas ORDER BY nome COLLATE NOCASE, id.
  */
-test("lt-orch-dm-multi-unpinned-no-decrypt-agent: N>1 unpinned DM → no agent/decrypt/turn_row; list nome NOCASE then id", async () => {
+test("lt-orch-dm-multi-unpinned-no-decrypt-agent: N>1 unpinned DM → no agent/decrypt/turn rows; list nome NOCASE then id", async () => {
   const db = openDb();
   const user = seedUser(db, { id: "user-dm-multi" });
   const tgId = "777003";
@@ -605,6 +638,7 @@ test("lt-orch-dm-multi-unpinned-no-decrypt-agent: N>1 unpinned DM → no agent/d
   await seedValidLlm(db, empZ.id, "sk-other-z");
 
   const { db: spyDb, llmReads } = spyLlmSettingsReads(db);
+  const turnRowsBefore = anyTurnTableRowCount(db);
 
   /** @type {unknown[]} */
   const agentCalls = [];
@@ -627,9 +661,9 @@ test("lt-orch-dm-multi-unpinned-no-decrypt-agent: N>1 unpinned DM → no agent/d
     "loadEmpresaLlmForBot/decrypt must not be invoked (no empresa_llm_settings SELECT)",
   );
   assert.equal(
-    countTurnContext(db),
-    0,
-    "no turn_context row must be inserted",
+    anyTurnTableRowCount(db),
+    turnRowsBefore,
+    "no row must be written to any turn-shaped table",
   );
 
   // Reply lists empresas for disambiguation — all three nomes present
@@ -733,7 +767,6 @@ test("lt-orch-dm-bootstrap-pin-confirm-only: valid selector → pin + pt-br conf
     0,
     "decrypt/loadEmpresaLlmForBot must not be invoked on selector message",
   );
-  assert.equal(countTurnContext(db), 0, "no turn_context on bootstrap pin");
 
   const pin = await getDmActiveEmpresa(db, user.id);
   assert.ok(pin, "pin must be persisted to telegram_dm_active_empresa");
@@ -843,7 +876,6 @@ test("lt-orch-dm-bootstrap-invalid-relists: invalid selector → re-list NOCASE 
     null,
     "pin must not be written",
   );
-  assert.equal(countTurnContext(db), 0);
 
   // Re-lists same empresas ordered by nome COLLATE NOCASE then id: Alpha, Charlie
   assert.ok(
@@ -977,6 +1009,7 @@ test("lt-orch-dm-stale-pin-rebootstrap: stale pin cleared; N>1 list / N=1 auto /
     await seedValidLlm(db, empA.id);
 
     const { db: spyDb, llmReads } = spyLlmSettingsReads(db);
+    const turnRowsBefore = anyTurnTableRowCount(db);
     /** @type {unknown[]} */
     const agentCalls = [];
     const result = await handleBotTurn({
@@ -1001,7 +1034,11 @@ test("lt-orch-dm-stale-pin-rebootstrap: stale pin cleared; N>1 list / N=1 auto /
       isNonEmptyPtBr(reply),
       `N=0 refuse must be non-empty pt-br, got: ${reply}`,
     );
-    assert.equal(countTurnContext(db), 0);
+    assert.equal(
+      anyTurnTableRowCount(db),
+      turnRowsBefore,
+      "no row must be written to any turn-shaped table",
+    );
     db.close();
   }
 });
@@ -1009,9 +1046,10 @@ test("lt-orch-dm-stale-pin-rebootstrap: stale pin cleared; N>1 list / N=1 auto /
 // ─── lt-orch-dm-switch-boundary-line ───────────────────────────────────────
 
 /**
- * @description DM pin empresa B + pending_boundary=1: insertTurnContext gets dm_boundary_line (other-tenant) + empresa_id B; pending cleared to 0 after turn row written.
+ * @description DM pin empresa B + pending_boundary=1: dispatched signal attributes carry
+ * dmBoundaryLine (other-tenant) + empresaId B; pending cleared to 0 before dispatch.
  */
-test("lt-orch-dm-switch-boundary-line: pending_boundary=1 → dm_boundary_line + empresa B; pending cleared to 0", async () => {
+test("lt-orch-dm-switch-boundary-line: pending_boundary=1 → dispatched dmBoundaryLine + empresaId B; pending cleared to 0", async () => {
   const db = openDb();
   const user = seedUser(db, { id: "user-boundary" });
   const tgId = "555001";
@@ -1029,18 +1067,8 @@ test("lt-orch-dm-switch-boundary-line: pending_boundary=1 → dm_boundary_line +
   assert.equal(before?.empresa_id, empB.id);
   assert.equal(before?.pending_boundary, 1);
 
-  /** @type {unknown[][]} */
-  const insertCalls = [];
   /** @type {unknown[]} */
   const agentCalls = [];
-
-  const insertSpy = async (...args) => {
-    insertCalls.push(args);
-    return realInsertTurnContext(
-      /** @type {Parameters<typeof realInsertTurnContext>[0]} */ (args[0]),
-      /** @type {Parameters<typeof realInsertTurnContext>[1]} */ (args[1]),
-    );
-  };
 
   const result = await handleBotTurn({
     db,
@@ -1054,54 +1082,39 @@ test("lt-orch-dm-switch-boundary-line: pending_boundary=1 → dm_boundary_line +
       agentCalls.push(a);
       return "ok boundary turn";
     },
-    insertTurnContext: insertSpy,
   });
 
   assert.ok(replyOf(result));
-  assert.equal(insertCalls.length, 1, "insertTurnContext must run once");
   assert.equal(agentCalls.length, 1, "runAgentTurn must run once after gates");
 
-  const inserted = normalizeInsertArgs(insertCalls[0]);
+  const attributes = dispatchedAttributesOf(agentCalls[0]);
   assert.equal(
-    inserted.empresaId,
+    attributes.empresaId,
     empB.id,
-    "insertTurnContext empresa_id must equal B only",
+    "dispatched attributes.empresaId must equal B only",
   );
-  assert.equal(inserted.surface, "dm");
+  assert.equal(attributes.surface, "dm");
   assert.ok(
-    typeof inserted.dmBoundaryLine === "string" &&
-      inserted.dmBoundaryLine.trim().length > 0,
-    "insertTurnContext must receive non-empty dm_boundary_line",
+    typeof attributes.dmBoundaryLine === "string" &&
+      attributes.dmBoundaryLine.trim().length > 0,
+    "dispatched attributes must carry a non-empty dmBoundaryLine",
   );
   assert.ok(
     /outr[oa]|other|tenant|empresa|anterio|pr[eé]vi|troca|boundary|contexto/i.test(
-      inserted.dmBoundaryLine,
+      attributes.dmBoundaryLine,
     ),
-    `dm_boundary_line must state prior tool results may be other-tenant, got: ${inserted.dmBoundaryLine}`,
+    `dmBoundaryLine must state prior tool results may be other-tenant, got: ${attributes.dmBoundaryLine}`,
   );
 
-  // After turn row written, pending_boundary cleared to 0
+  // pending_boundary cleared to 0 before dispatch
   const after = await getDmActiveEmpresa(db, user.id);
   assert.ok(after, "pin must remain");
   assert.equal(after.empresa_id, empB.id);
   assert.equal(
     after.pending_boundary,
     0,
-    "pending_boundary must be cleared to 0 after turn row is written",
+    "pending_boundary must be cleared to 0 before dispatch",
   );
-
-  // D1 row also holds boundary line
-  const row = db
-    .prepare(
-      `SELECT empresa_id, dm_boundary_line, surface
-       FROM telegram_agent_turn_context LIMIT 1`,
-    )
-    .get();
-  assert.ok(row);
-  assert.equal(row.empresa_id, empB.id);
-  assert.equal(row.surface, "dm");
-  assert.equal(typeof row.dm_boundary_line, "string");
-  assert.ok(String(row.dm_boundary_line).length > 0);
 
   db.close();
 });
@@ -1172,9 +1185,10 @@ test("lt-orch-dm-switch-no-second-tool-same-turn: switch turn → pin B pending=
 // ─── lt-orch-identity-minimal ──────────────────────────────────────────────
 
 /**
- * @description Successful topic path: runAgentTurn args include sessionId, message, turnToken, gated identity; no array of all task titulos from D1.
+ * @description Successful topic path: runAgentTurn args carry sessionId + a dispatched signal
+ * with a non-empty body and gated identity attributes; no array of all task titulos from D1.
  */
-test("lt-orch-identity-minimal: topic success → sessionId/message/turnToken/identity; no task titulos array", async () => {
+test("lt-orch-identity-minimal: topic success → sessionId + signal body/attributes; no task titulos array", async () => {
   const db = openDb();
   const emp = seedEmpresa(db, { id: "emp-idmin", nome: "Empresa IdMin" });
   const expert = seedExpert(db, {
@@ -1203,8 +1217,6 @@ test("lt-orch-identity-minimal: topic success → sessionId/message/turnToken/id
 
   /** @type {Record<string, unknown>[]} */
   const agentCalls = [];
-  /** @type {unknown[][]} */
-  const insertCalls = [];
 
   const messageText = " criar tarefa Revisar landing";
   const result = await handleBotTurn({
@@ -1219,51 +1231,33 @@ test("lt-orch-identity-minimal: topic success → sessionId/message/turnToken/id
     llmKeyEncryptionSecret: TEST_ENCRYPTION_SECRET,
     runAgentTurn: async (args) => {
       agentCalls.push(/** @type {Record<string, unknown>} */ (args ?? {}));
-      return "ok identity";
-    },
-    insertTurnContext: async (...args) => {
-      insertCalls.push(args);
-      return realInsertTurnContext(
-        /** @type {Parameters<typeof realInsertTurnContext>[0]} */ (args[0]),
-        /** @type {Parameters<typeof realInsertTurnContext>[1]} */ (args[1]),
-      );
+      return { text: "ok identity", key: "sub-idmin-1" };
     },
   });
 
-  assert.ok(replyOf(result));
+  assert.equal(replyOf(result), "ok identity");
+  assert.equal(
+    answeredBySubmissionIdOf(result),
+    "sub-idmin-1",
+    "handleBotTurn must thread the resolved dedupe key from runAgentTurn's { key } result",
+  );
   assert.equal(agentCalls.length, 1, "runAgentTurn must be called once");
   const args = agentCalls[0];
 
   assert.equal(typeof args.sessionId, "string", "args.sessionId required");
-  assert.equal(args.sessionId, "topic:-2001:42", "sessionId must be topic form");
-  assert.equal(typeof args.message, "string", "args.message required");
-  assert.ok(
-    String(args.message).length > 0,
-    "message must be non-empty",
-  );
-  assert.equal(
-    typeof args.turnToken === "string" && args.turnToken.length > 0,
-    true,
-    "args.turnToken required",
-  );
+  assert.equal(args.sessionId, "tp2:-2001:42", "sessionId must be topic form");
 
-  // Gated identity fields needed to build the turn row — on runAgentTurn and/or insertTurnContext
-  const inserted =
-    insertCalls.length > 0 ? normalizeInsertArgs(insertCalls[0]) : null;
-  const empresaId =
-    args.empresaId ?? args.empresa_id ?? inserted?.empresaId;
-  const expertId =
-    args.expertId ?? args.expert_id ?? inserted?.expertId;
-  const actorUserId =
-    args.userId ??
-    args.actorUserId ??
-    args.actor_user_id ??
-    inserted?.actorUserId;
-  const surface = args.surface ?? inserted?.surface;
-  assert.equal(empresaId, emp.id, "gated identity must include empresaId");
-  assert.equal(expertId, expert.id, "gated identity must include expertId");
-  assert.equal(actorUserId, user.id, "gated identity must include actor userId");
-  assert.equal(surface, "topic", "gated identity must include surface topic");
+  const signal = dispatchedSignalOf(args);
+  assert.equal(signal.kind, "signal");
+  assert.equal(signal.type, "telegram.message");
+  assert.equal(typeof signal.body, "string", "signal.body required");
+  assert.ok(String(signal.body).length > 0, "signal.body must be non-empty");
+
+  const attributes = dispatchedAttributesOf(args);
+  assert.equal(attributes.empresaId, emp.id, "gated identity must include empresaId");
+  assert.equal(attributes.expertId, expert.id, "gated identity must include expertId");
+  assert.equal(attributes.actorUserId, user.id, "gated identity must include actor userId");
+  assert.equal(attributes.surface, "topic", "gated identity must include surface topic");
 
   // Must NOT contain an array of all task titulos from D1
   const serialized = JSON.stringify(args);
@@ -1272,36 +1266,18 @@ test("lt-orch-identity-minimal: topic success → sessionId/message/turnToken/id
     false,
     "runAgentTurn args must not contain task titulo dumps from D1",
   );
-  for (const key of Object.keys(args)) {
-    const v = args[key];
-    if (Array.isArray(v)) {
-      const joined = v.map((x) => String(x)).join("\n");
-      assert.equal(
-        joined.includes(decoyTitulo),
-        false,
-        `args.${key} array must not dump task titulos`,
-      );
-      // Heuristic: no array that looks like a full task-title list
-      if (
-        v.length > 0 &&
-        v.every((x) => typeof x === "string" || (x && typeof x === "object" && "titulo" in /** @type {object} */ (x)))
-      ) {
-        assert.fail(
-          `args must not contain an array of task titulos (found args.${key})`,
-        );
-      }
-    }
-  }
 
   db.close();
 });
 
-// ─── lt-orch-writes-turn-row-then-agent ─────────────────────────────────────
+// ─── lt-orch-no-turn-table-dispatches-signal ───────────────────────────────
 
 /**
- * @description Successful topic path: telegram_agent_turn_context row inserted before runAgentTurn once; createGestaoBotTools not invoked in orchestrator module.
+ * @description Successful topic path: runAgentTurn is called exactly once with the dispatched
+ * signal; no row is written to any turn-shaped table; createGestaoBotTools not invoked in the
+ * orchestrator module (that closure lives inside the Durable Object, not the Worker).
  */
-test("lt-orch-writes-turn-row-then-agent: turn row before runAgentTurn once; createGestaoBotTools not in orchestrator", async () => {
+test("lt-orch-no-turn-table-dispatches-signal: runAgentTurn once with signal; no turn rows; createGestaoBotTools not in orchestrator", async () => {
   const db = openDb();
   const emp = seedEmpresa(db, { id: "emp-order", nome: "Empresa Order" });
   const expert = seedExpert(db, {
@@ -1320,8 +1296,7 @@ test("lt-orch-writes-turn-row-then-agent: turn row before runAgentTurn once; cre
   seedMembro(db, emp.id, user.id);
   await seedValidLlm(db, emp.id);
 
-  /** @type {string[]} */
-  const order = [];
+  const turnRowsBefore = anyTurnTableRowCount(db);
   /** @type {unknown[]} */
   const agentCalls = [];
 
@@ -1335,40 +1310,24 @@ test("lt-orch-writes-turn-row-then-agent: turn row before runAgentTurn once; cre
     }),
     botUsername: BOT_USERNAME,
     llmKeyEncryptionSecret: TEST_ENCRYPTION_SECRET,
-    insertTurnContext: async (...args) => {
-      order.push("insert");
-      // Row must exist before agent — write via real helper
-      const out = await realInsertTurnContext(
-        /** @type {Parameters<typeof realInsertTurnContext>[0]} */ (args[0]),
-        /** @type {Parameters<typeof realInsertTurnContext>[1]} */ (args[1]),
-      );
-      assert.equal(
-        countTurnContext(db) >= 1,
-        true,
-        "turn row must be present immediately after insertTurnContext",
-      );
-      return out;
-    },
     runAgentTurn: async (args) => {
-      order.push("agent");
       agentCalls.push(args);
-      assert.equal(
-        countTurnContext(db) >= 1,
-        true,
-        "turn row must already exist when runAgentTurn is invoked",
-      );
-      return "ok order";
+      return { text: "ok order", key: "sub-order-1" };
     },
   });
 
-  assert.ok(replyOf(result));
-  assert.deepEqual(
-    order,
-    ["insert", "agent"],
-    "telegram_agent_turn_context row must be inserted before runAgentTurn",
+  assert.equal(replyOf(result), "ok order");
+  assert.equal(
+    answeredBySubmissionIdOf(result),
+    "sub-order-1",
+    "handleBotTurn must thread the resolved dedupe key through",
   );
   assert.equal(agentCalls.length, 1, "runAgentTurn must be invoked once");
-  assert.equal(countTurnContext(db), 1, "exactly one turn_context row");
+  assert.equal(
+    anyTurnTableRowCount(db),
+    turnRowsBefore,
+    "no row must be written to any turn-shaped table",
+  );
 
   // createGestaoBotTools is not invoked in the orchestrator module (source grep)
   const orchSrc = readFileSync(ORCHESTRATOR_SRC, "utf8");
@@ -1386,12 +1345,13 @@ test("lt-orch-writes-turn-row-then-agent: turn row before runAgentTurn once; cre
   db.close();
 });
 
-// ─── lt-orch-does-not-put-apikey-in-flue-body ───────────────────────────────
+// ─── lt-orch-does-not-put-apikey-in-dispatched-signal ──────────────────────
 
 /**
- * @description Successful topic path: runAgentTurn is not instructed to place apiKey in the Flue JSON body; apiKey only via D1 turn row / turn-token path.
+ * @description Successful topic path: the dispatched signal never carries the tenant's plaintext
+ * API key value — the agent re-resolves+decrypts the key itself inside the Durable Object.
  */
-test("lt-orch-does-not-put-apikey-in-flue-body: apiKey only on D1 turn-token path, not Flue body instruction", async () => {
+test("lt-orch-does-not-put-apikey-in-dispatched-signal: apiKey never appears in the captured runAgentTurn call", async () => {
   const db = openDb();
   const emp = seedEmpresa(db, { id: "emp-nokey", nome: "Empresa NoKeyBody" });
   const expert = seedExpert(db, {
@@ -1413,8 +1373,6 @@ test("lt-orch-does-not-put-apikey-in-flue-body: apiKey only on D1 turn-token pat
 
   /** @type {Record<string, unknown>[]} */
   const agentCalls = [];
-  /** @type {unknown[][]} */
-  const insertCalls = [];
 
   const result = await handleBotTurn({
     db,
@@ -1426,13 +1384,6 @@ test("lt-orch-does-not-put-apikey-in-flue-body: apiKey only on D1 turn-token pat
     }),
     botUsername: BOT_USERNAME,
     llmKeyEncryptionSecret: TEST_ENCRYPTION_SECRET,
-    insertTurnContext: async (...args) => {
-      insertCalls.push(args);
-      return realInsertTurnContext(
-        /** @type {Parameters<typeof realInsertTurnContext>[0]} */ (args[0]),
-        /** @type {Parameters<typeof realInsertTurnContext>[1]} */ (args[1]),
-      );
-    },
     runAgentTurn: async (args) => {
       agentCalls.push(/** @type {Record<string, unknown>} */ (args ?? {}));
       return "ok no key body";
@@ -1441,75 +1392,31 @@ test("lt-orch-does-not-put-apikey-in-flue-body: apiKey only on D1 turn-token pat
 
   assert.ok(replyOf(result));
   assert.equal(agentCalls.length, 1);
-  assert.equal(insertCalls.length, 1);
 
   const args = agentCalls[0];
   assert.equal(typeof args.sessionId, "string");
-  assert.equal(typeof args.message, "string");
-  assert.equal(typeof args.turnToken, "string");
-  assert.ok(String(args.turnToken).length > 0);
 
-  // Must not instruct Flue JSON body to carry apiKey
-  for (const bodyKey of ["body", "flueBody", "requestBody", "jsonBody"]) {
-    const body = args[bodyKey];
-    if (body && typeof body === "object") {
-      const b = /** @type {Record<string, unknown>} */ (body);
-      assert.equal(
-        Object.prototype.hasOwnProperty.call(b, "apiKey"),
-        false,
-        `runAgentTurn args.${bodyKey} must not include apiKey`,
-      );
-      assert.equal(
-        Object.prototype.hasOwnProperty.call(b, "api_key"),
-        false,
-        `runAgentTurn args.${bodyKey} must not include api_key`,
-      );
-      assert.equal(
-        b.apiKey ?? b.api_key,
-        undefined,
-        `Flue body must not carry apiKey`,
-      );
-      // Body keys if present should be message-only
-      if (Object.keys(b).length > 0) {
-        assert.deepEqual(
-          Object.keys(b).sort(),
-          ["message"],
-          `Flue JSON body keys must be exactly {message} when body is provided`,
-        );
-      }
-    }
-  }
+  const signal = dispatchedSignalOf(args);
+  assert.equal(typeof signal.body, "string");
 
-  // putApiKeyInBody / includeApiKeyInBody style flags must not be true
-  assert.notEqual(args.putApiKeyInBody, true);
-  assert.notEqual(args.includeApiKeyInBody, true);
-  assert.notEqual(args.sendApiKeyInBody, true);
-
-  // apiKey reaches D1 turn row (ciphertext path), not as Flue transport
-  const inserted = normalizeInsertArgs(insertCalls[0]);
-  assert.equal(inserted.apiKey, secretKey, "apiKey must reach insertTurnContext only");
-
-  const row = db
-    .prepare(
-      `SELECT api_key_ciphertext, api_key_iv, turn_token
-       FROM telegram_agent_turn_context WHERE turn_token = ?`,
-    )
-    .get(String(args.turnToken));
-  assert.ok(row, "turn row must exist for turnToken");
-  assert.equal(typeof row.api_key_ciphertext, "string");
-  assert.ok(row.api_key_ciphertext.length > 0);
-  assert.notEqual(
-    row.api_key_ciphertext,
-    secretKey,
-    "D1 must store ciphertext, not plaintext",
+  const attributes = dispatchedAttributesOf(args);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(attributes, "apiKey"),
+    false,
+    "dispatched attributes must not include an apiKey key",
   );
-  assert.equal(typeof row.api_key_iv, "string");
-  assert.ok(row.api_key_iv.length > 0);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(attributes, "api_key"),
+    false,
+    "dispatched attributes must not include an api_key key",
+  );
 
-  // runAgentTurn transport is turn-token, not plaintext key as body payload
-  assert.ok(
-    args.turnToken,
-    "apiKey handoff must be via turnToken, not Flue body",
+  // Never appears anywhere in the captured call, by key name or by value
+  const serialized = JSON.stringify(args);
+  assert.equal(
+    serialized.includes(secretKey),
+    false,
+    "the captured runAgentTurn call must never contain the tenant's plaintext API key value",
   );
 
   db.close();

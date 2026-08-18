@@ -167,6 +167,13 @@ export function createGestaoBotTools(
 
   const tools: ToolDefinition[] = []
 
+  // In Flue 2.x, `terminate: true` settles the tool batch rather than aborting it.
+  // If `definir_empresa_ativa` runs before a sibling mutating tool, that sibling would
+  // still execute against the OLD empresa closure and write into the wrong tenant.
+  // This per-render latch blocks any further mutating tool in the same batch after a switch.
+  let activeEmpresaSwitched = false
+  let empresaSwitchInFlight = false
+
   // Common helpers
   async function ensureFk(): Promise<void> {
     await enableForeignKeysAsync(db)
@@ -185,7 +192,7 @@ export function createGestaoBotTools(
         const sql = `SELECT id, campanha_id, titulo, status, dono_id, created_by, deleted_at
           FROM tarefas
           WHERE empresa_id = ? AND deleted_at IS NULL
-          ORDER BY created_at DESC LIMIT 50`
+          ORDER BY created_at DESC, rowid DESC LIMIT 50`
         const rows = (await Promise.resolve(
           db.prepare(sql).all(closureEmpresaId),
         )) as Array<Record<string, unknown>>
@@ -241,7 +248,10 @@ export function createGestaoBotTools(
           }
         }
         const telegram_preview = lines.join('\n').trim()
-        return { tarefas: enriched, telegram_preview, total: enriched.length }
+        return {
+          output: { tarefas: enriched, telegram_preview, total: enriched.length },
+          ...(activeEmpresaSwitched ? { terminate: true } : {}),
+        }
       },
     }),
   )
@@ -256,16 +266,19 @@ export function createGestaoBotTools(
         campanha_id: v.optional(v.string()),
         campanhaId: v.optional(v.string()),
       }),
-      run: async ({ input }) => {
+      run: async ({ data }) => {
+      if (empresaSwitchInFlight || activeEmpresaSwitched) {
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
+      }
       await ensureFk()
-      const titulo = String(input.titulo ?? '').trim()
-      if (!titulo) return { ok: false, error: 'titulo obrigatório' }
+      const titulo = String(data.titulo ?? '').trim()
+      if (!titulo) return { output: { ok: false, error: 'titulo obrigatório' } }
 
       const explicitCampanhaId =
-        typeof input.campanha_id === 'string'
-          ? input.campanha_id
-          : typeof input.campanhaId === 'string'
-            ? input.campanhaId
+        typeof data.campanha_id === 'string'
+          ? data.campanha_id
+          : typeof data.campanhaId === 'string'
+            ? data.campanhaId
             : null
 
       let targetCampanhaId: string | null = explicitCampanhaId
@@ -285,14 +298,18 @@ export function createGestaoBotTools(
             )
           } else if (openCount === 0) {
             return {
-              status: 'no_open_campaign',
-              message:
-                'Nenhuma campanha aberta. Crie uma campanha ou informe a campanha_id.',
+              output: {
+                status: 'no_open_campaign',
+                message:
+                  'Nenhuma campanha aberta. Crie uma campanha ou informe a campanha_id.',
+              },
             }
           } else {
             return {
-              status: 'ask_campaign',
-              message: 'Qual campanha? Há mais de uma aberta.',
+              output: {
+                status: 'ask_campaign',
+                message: 'Qual campanha? Há mais de uma aberta.',
+              },
             }
           }
         }
@@ -305,8 +322,10 @@ export function createGestaoBotTools(
           )
           if (!ok) {
             return {
-              ok: false,
-              error: 'Campanha não encontrada ou não pertence a este expert.',
+              output: {
+                ok: false,
+                error: 'Campanha não encontrada ou não pertence a este expert.',
+              },
             }
           }
         }
@@ -314,9 +333,11 @@ export function createGestaoBotTools(
         // DM: requires explicit campanha_id, no LD-6
         if (!targetCampanhaId) {
           return {
-            ok: false,
-            error:
-              'campanha_id é obrigatório para criar tarefa no DM. Informe a campanha_id explicitamente.',
+            output: {
+              ok: false,
+              error:
+                'campanha_id é obrigatório para criar tarefa no DM. Informe a campanha_id explicitamente.',
+            },
           }
         }
         const ok = await verifyLiveCampanhaForEmpresa(
@@ -325,18 +346,18 @@ export function createGestaoBotTools(
           closureEmpresaId,
         )
         if (!ok) {
-          return { ok: false, error: 'Campanha não encontrada.' }
+          return { output: { ok: false, error: 'Campanha não encontrada.' } }
         }
       }
 
       if (!targetCampanhaId) {
-        return { ok: false, error: 'campanha_id inválido' }
+        return { output: { ok: false, error: 'campanha_id inválido' } }
       }
 
       const id = crypto.randomUUID()
       const isTopic = surface === 'topic'
       if (isTopic && !closureExpertId) {
-        return { ok: false, error: 'Campanha não encontrada' }
+        return { output: { ok: false, error: 'Campanha não encontrada' } }
       }
       const whereClause = isTopic
         ? 'id = ? AND empresa_id = ? AND expert_id = ? AND deleted_at IS NULL'
@@ -362,9 +383,9 @@ export function createGestaoBotTools(
       )
       const changes = runChanges(runResult) ?? 0
       if (changes === 0) {
-        return { ok: false, error: 'Campanha não encontrada' }
+        return { output: { ok: false, error: 'Campanha não encontrada' } }
       }
-      return { ok: true, id, campanha_id: targetCampanhaId }
+      return { output: { ok: true, id, campanha_id: targetCampanhaId } }
     },
     }),
   )
@@ -380,10 +401,13 @@ export function createGestaoBotTools(
         status: v.optional(v.string()),
         titulo: v.optional(v.string()),
       }),
-      run: async ({ input }) => {
+      run: async ({ data }) => {
+      if (empresaSwitchInFlight || activeEmpresaSwitched) {
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
+      }
       await ensureFk()
-      const id = String(input.id ?? input.tarefa_id ?? '')
-      if (!id) return { ok: false, error: 'id obrigatório' }
+      const id = String(data.id ?? data.tarefa_id ?? '')
+      if (!id) return { output: { ok: false, error: 'id obrigatório' } }
       const live = await Promise.resolve(
         db
           .prepare(
@@ -391,16 +415,16 @@ export function createGestaoBotTools(
           )
           .get(id, closureEmpresaId),
       )
-      if (!live) return { ok: false, error: 'Tarefa não encontrada' }
+      if (!live) return { output: { ok: false, error: 'Tarefa não encontrada' } }
       const status =
-        typeof input.status === 'string' ? input.status : undefined
+        typeof data.status === 'string' ? data.status : undefined
       const titulo =
-        typeof input.titulo === 'string' ? input.titulo : undefined
-      if (!status && !titulo) return { ok: false, error: 'status ou titulo obrigatório' }
+        typeof data.titulo === 'string' ? data.titulo : undefined
+      if (!status && !titulo) return { output: { ok: false, error: 'status ou titulo obrigatório' } }
       // TAREFA_STATUS is a readonly tuple of the union; `status` is an arbitrary model-supplied
       // string at this point, which is exactly what this guard exists to reject.
       if (status && !(TAREFA_STATUS as readonly string[]).includes(status)) {
-        return { ok: false, error: 'status inválido' }
+        return { output: { ok: false, error: 'status inválido' } }
       }
       if (status) {
         const liveStatusRow = await Promise.resolve(
@@ -421,7 +445,7 @@ export function createGestaoBotTools(
               .run(status, id, closureEmpresaId),
           )
           const ch = runChanges(r) ?? 0
-          if (ch === 0) return { ok: false, error: 'Tarefa não encontrada' }
+          if (ch === 0) return { output: { ok: false, error: 'Tarefa não encontrada' } }
         }
       }
       if (titulo) {
@@ -434,9 +458,9 @@ export function createGestaoBotTools(
             .run(titulo, id, closureEmpresaId),
         )
         const ch = runChanges(r) ?? 0
-        if (ch === 0) return { ok: false, error: 'Tarefa não encontrada' }
+        if (ch === 0) return { output: { ok: false, error: 'Tarefa não encontrada' } }
       }
-      return { ok: true }
+      return { output: { ok: true } }
     },
     }),
   )
@@ -450,10 +474,13 @@ export function createGestaoBotTools(
         id: v.optional(v.string()),
         tarefa_id: v.optional(v.string()),
       }),
-      run: async ({ input }) => {
+      run: async ({ data }) => {
+      if (empresaSwitchInFlight || activeEmpresaSwitched) {
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
+      }
       await ensureFk()
-      const id = String(input.id ?? input.tarefa_id ?? '')
-      if (!id) return { ok: false, error: 'id obrigatório' }
+      const id = String(data.id ?? data.tarefa_id ?? '')
+      if (!id) return { output: { ok: false, error: 'id obrigatório' } }
       const runResult = await Promise.resolve(
         db
           .prepare(
@@ -467,10 +494,10 @@ export function createGestaoBotTools(
         const exists = await Promise.resolve(
           db.prepare(`SELECT id FROM tarefas WHERE id = ? AND empresa_id = ?`).get(id, closureEmpresaId),
         )
-        if (exists) return { ok: true }
-        return { ok: false, error: 'Tarefa não encontrada' }
+        if (exists) return { output: { ok: true } }
+        return { output: { ok: false, error: 'Tarefa não encontrada' } }
       }
-      return { ok: true }
+      return { output: { ok: true } }
     },
     }),
   )
@@ -486,26 +513,31 @@ export function createGestaoBotTools(
         mensagem: v.optional(v.string()),
         message: v.optional(v.string()),
       }),
-      run: async ({ input }) => {
+      run: async ({ data }) => {
+      if (empresaSwitchInFlight || activeEmpresaSwitched) {
+        return { output: { ok: false, error: 'A empresa ativa mudou neste turno. Refaça o pedido.' } }
+      }
       await ensureFk()
-      const userId = String(input.user_id ?? input.userId ?? '')
-      const mensagem = String(input.mensagem ?? input.message ?? '')
-      if (!userId) return { ok: false, error: 'user_id obrigatório' }
+      const userId = String(data.user_id ?? data.userId ?? '')
+      const mensagem = String(data.mensagem ?? data.message ?? '')
+      if (!userId) return { output: { ok: false, error: 'user_id obrigatório' } }
       const sameEmpresa = await isSameEmpresaMember(
         db,
         closureEmpresaId,
         userId,
       )
-      if (!sameEmpresa) return { ok: false, error: 'Usuário não encontrado' }
+      if (!sameEmpresa) return { output: { ok: false, error: 'Usuário não encontrado' } }
       const tgId = await getTelegramLink(db, userId)
       if (!tgId) {
         return {
-          ok: false,
-          message: 'Usuário não possui link com Telegram',
+          output: {
+            ok: false,
+            message: 'Usuário não possui link com Telegram',
+          },
         }
       }
       await Promise.resolve(sendNotify(tgId, mensagem))
-      return { ok: true }
+      return { output: { ok: true } }
     },
     }),
   )
@@ -521,9 +553,10 @@ export function createGestaoBotTools(
       const sql = `SELECT m.user_id, u.name, m.papel
         FROM empresa_membros m
         JOIN users u ON u.id = m.user_id
-        WHERE m.empresa_id = ?`
+        WHERE m.empresa_id = ?
+        ORDER BY u.name COLLATE NOCASE, m.user_id LIMIT 50`
       const rows = await Promise.resolve(db.prepare(sql).all(closureEmpresaId))
-      return { membros: rows ?? [] }
+      return { output: { membros: rows ?? [] }, ...(activeEmpresaSwitched ? { terminate: true } : {}) }
     },
     }),
   )
@@ -536,14 +569,14 @@ export function createGestaoBotTools(
         input: v.object({}),
         run: async () => {
         await ensureFk()
-        if (!closureExpertId) return { campanhas: [] }
+        if (!closureExpertId) return { output: { campanhas: [] } }
         const sql = `SELECT id, nome, status, expert_id FROM campanhas
           WHERE empresa_id = ? AND expert_id = ? AND deleted_at IS NULL
           ORDER BY created_at DESC LIMIT 50`
         const rows = await Promise.resolve(
           db.prepare(sql).all(closureEmpresaId, closureExpertId),
         )
-        return { campanhas: rows ?? [] }
+        return { output: { campanhas: rows ?? [] } }
       },
       }),
     )
@@ -561,11 +594,12 @@ export function createGestaoBotTools(
           FROM empresa_membros m
           JOIN empresas e ON e.id = m.empresa_id
           WHERE m.user_id = ? AND e.deleted_at IS NULL
-          ORDER BY e.nome COLLATE NOCASE, e.id`
+          ORDER BY e.nome COLLATE NOCASE, e.id
+          LIMIT 50`
         const rows = await Promise.resolve(
           db.prepare(sql).all(closureActorId),
         )
-        return { empresas: rows ?? [] }
+        return { output: { empresas: rows ?? [] }, ...(activeEmpresaSwitched ? { terminate: true } : {}) }
       },
       }),
     )
@@ -578,36 +612,57 @@ export function createGestaoBotTools(
           empresa_id: v.optional(v.string()),
           empresaId: v.optional(v.string()),
         }),
-        run: async ({ input }) => {
-        await ensureFk()
-        const targetEmpresaId = String(
-          input.empresa_id ?? input.empresaId ?? '',
-        )
-        if (!targetEmpresaId) return { ok: false, error: 'empresa_id obrigatório' }
-        const same = await isSameEmpresaMember(
-          db,
-          targetEmpresaId,
-          closureActorId,
-        )
-        if (!same) return { ok: false, error: 'Empresa não encontrada' }
-        const current = await Promise.resolve(
-          db.prepare(`SELECT empresa_id FROM telegram_dm_active_empresa WHERE user_id = ?`).get(closureActorId),
-        )
-        if ((current as any)?.empresa_id === targetEmpresaId) {
-          return { terminal: true, empresa_id: targetEmpresaId }
+        run: async ({ data }) => {
+        const targetEmpresaId = String(data.empresa_id ?? data.empresaId ?? '')
+        if (targetEmpresaId && targetEmpresaId === closureEmpresaId) {
+          await ensureFk()
+          return { output: { empresa_id: targetEmpresaId }, terminate: true }
         }
-        await Promise.resolve(
-          db
-            .prepare(
-              `INSERT INTO telegram_dm_active_empresa (user_id, empresa_id, pending_boundary)
-               VALUES (?, ?, 1)
-               ON CONFLICT(user_id) DO UPDATE SET
-                 empresa_id = excluded.empresa_id,
-                 pending_boundary = 1`,
-            )
-            .run(closureActorId, targetEmpresaId),
-        )
-        return { terminal: true, empresa_id: targetEmpresaId }
+        if (empresaSwitchInFlight || activeEmpresaSwitched) {
+          return { output: { ok: false, error: 'Já houve uma troca de empresa neste turno. Refaça o pedido.' }, terminate: true }
+        }
+        empresaSwitchInFlight = true
+        let switchCommitted = false
+        try {
+          await ensureFk()
+          if (!targetEmpresaId) {
+            empresaSwitchInFlight = false
+            return { output: { ok: false, error: 'empresa_id obrigatório' } }
+          }
+          const same = await isSameEmpresaMember(
+            db,
+            targetEmpresaId,
+            closureActorId,
+          )
+          if (!same) {
+            empresaSwitchInFlight = false
+            return { output: { ok: false, error: 'Empresa não encontrada' } }
+          }
+          const current = await Promise.resolve(
+            db.prepare(`SELECT empresa_id FROM telegram_dm_active_empresa WHERE user_id = ?`).get(closureActorId),
+          )
+          if ((current as any)?.empresa_id === targetEmpresaId) {
+            empresaSwitchInFlight = false
+            return { output: { empresa_id: targetEmpresaId }, terminate: true }
+          }
+          switchCommitted = true
+          await Promise.resolve(
+            db
+              .prepare(
+                `INSERT INTO telegram_dm_active_empresa (user_id, empresa_id, pending_boundary)
+                 VALUES (?, ?, 1)
+                 ON CONFLICT(user_id) DO UPDATE SET
+                   empresa_id = excluded.empresa_id,
+                   pending_boundary = 1`,
+              )
+              .run(closureActorId, targetEmpresaId),
+          )
+          activeEmpresaSwitched = true
+          return { output: { empresa_id: targetEmpresaId }, terminate: true }
+        } catch (error) {
+          if (!switchCommitted) empresaSwitchInFlight = false
+          throw error
+        }
       },
       }),
     )

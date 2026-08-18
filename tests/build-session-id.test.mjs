@@ -1,6 +1,12 @@
 /**
- * Locked buildSessionId contract — stable topic/dm session ids with String canonicalization.
- * Hermetic pure unit tests; no DB.
+ * Locked buildSessionId contract — empresa-scoped dm2 ids and tp2 topic ids with String
+ * canonicalization. Hermetic pure unit tests; no DB.
+ *
+ * The legacy lt-session-id-dm-stable (asserting the literal `dm:u-1`) is REVOKED — the DM id form
+ * changed to dm2:<empresaId>:<userId>. The STABILITY property it encoded (same input → same id,
+ * never a UUID) is preserved verbatim in the new form. lt-session-id-number-string-parity stays
+ * intact in substance: the topic-id numeric/string parity, only the prefix moved from `topic:` to
+ * `tp2:`.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -11,7 +17,7 @@ import { buildSessionId } from "../src/worker/services/build-session-id.ts";
 /**
  * @description Topic session ids canonicalize number and string chatId/threadId to the same string.
  */
-test("lt-session-id-number-string-parity: number and string chat/thread pairs yield topic:-1001:42", () => {
+test("lt-session-id-number-string-parity: number and string chat/thread pairs yield tp2:-1001:42", () => {
   const fromNumbers = buildSessionId({
     kind: "topic",
     chatId: -1001,
@@ -23,22 +29,24 @@ test("lt-session-id-number-string-parity: number and string chat/thread pairs yi
     threadId: "42",
   });
 
-  assert.equal(fromNumbers, "topic:-1001:42");
-  assert.equal(fromStrings, "topic:-1001:42");
+  assert.equal(fromNumbers, "tp2:-1001:42");
+  assert.equal(fromStrings, "tp2:-1001:42");
   assert.equal(fromNumbers, fromStrings);
 });
 
-// ─── lt-session-id-dm-stable ───────────────────────────────────────────────
+// ─── lt-session-id-dm-stable (reissued) ─────────────────────────────────────
 
 /**
- * @description DM session id is stable for the same gestao user id and is not a random UUID.
+ * @description DM session id is stable for the same empresa+user pair and is not a random UUID.
+ * Preserves the STABILITY property of the revoked lt-session-id-dm-stable in the new
+ * dm2:<empresaId>:<userId> form — only the FORM changed.
  */
-test("lt-session-id-dm-stable: kind dm for u-1 returns dm:u-1 twice, not a UUID", () => {
-  const first = buildSessionId({ kind: "dm", userId: "u-1" });
-  const second = buildSessionId({ kind: "dm", userId: "u-1" });
+test("lt-session-id-dm-stable: kind dm for emp-A/u-1 returns dm2:emp-A:u-1 twice, not a UUID", () => {
+  const first = buildSessionId({ kind: "dm", empresaId: "emp-A", userId: "u-1" });
+  const second = buildSessionId({ kind: "dm", empresaId: "emp-A", userId: "u-1" });
 
-  assert.equal(first, "dm:u-1");
-  assert.equal(second, "dm:u-1");
+  assert.equal(first, "dm2:emp-A:u-1");
+  assert.equal(second, "dm2:emp-A:u-1");
   assert.equal(first, second);
 
   const uuidPattern =

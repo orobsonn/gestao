@@ -1,4 +1,9 @@
-/** @description Bot turn orchestrator: surface→actor→dm-pin→llm→session→turnrow→agent gates. Writes turn context then calls runAgentTurn (message-only body). apiKey only via insertTurnContext. DM pin bootstrap/list/revalidate per LD-18. pending_boundary injects dm_boundary_line. Fail-closed pt-br. */
+/** @description Bot turn orchestrator: surface→actor→dm-pin→llm→session→signal→agent gates.
+ *  Dispatches a `{ kind: 'signal', type: 'telegram.message', body, attributes }` message to
+ *  runAgentTurn instead of writing a D1 turn-context row — the closed attribute set carries no
+ *  key material; the agent re-resolves+decrypts the LLM key itself inside the Durable Object.
+ *  DM pin bootstrap/list/revalidate per LD-18. pending_boundary injects dmBoundaryLine once, then
+ *  is cleared by the Worker before dispatch. Fail-closed pt-br. */
 import { resolveTelegramTopicContext } from './resolve-telegram-topic-context.ts'
 import { resolveTelegramActor } from './telegram-actor-gate.ts'
 import { loadEmpresaLlmForBot } from './empresa-llm-gate.ts'
@@ -9,7 +14,6 @@ import {
   clearDmActiveEmpresa,
   setDmPendingBoundary,
 } from './telegram-dm-active-empresa.ts'
-import { insertTurnContext as realInsertTurnContext } from '../agent/turn-context-store.ts'
 import type { DbLike } from '../types.ts'
 
 /** Wire shape of the slice of a Telegram update this orchestrator reads. Every field is optional:
@@ -73,6 +77,58 @@ function getTopicIds(update: TelegramUpdate | null | undefined): { chatId: strin
   }
 }
 
+/**
+ * @description Build the dispatched signal's `attributes` string-to-string map. The closed
+ * attribute set is the CLOSED contract — every key/value here is emitted VERBATIM into the
+ * model's context by the runtime (renderSignalMessage), so never include key material. A
+ * null/undefined/empty-string candidate value is OMITTED (never coerced to the string `'null'`).
+ */
+function buildSignalAttributes(candidate: Record<string, string | null | undefined>): Record<string, string> {
+  const attributes: Record<string, string> = {}
+  for (const [key, value] of Object.entries(candidate)) {
+    if (value === null || value === undefined || value === '') continue
+    attributes[key] = value
+  }
+  return attributes
+}
+
+/** Wire shape of the signal message dispatched to runAgentTurn in place of the deleted D1
+ *  turn-context row. */
+type DispatchedSignal = {
+  kind: 'signal'
+  type: 'telegram.message'
+  body: string
+  attributes: Record<string, string>
+}
+
+/**
+ * @description Extract reply text from whatever the injected runAgentTurn resolves — a bare
+ * string (legacy callers/tests) or the `{ text | reply }` object the in-process Flue port
+ * (run-agent-turn.ts) and the frozen webhook-level mocks both produce.
+ */
+function extractAgentReplyText(result: unknown): string {
+  if (typeof result === 'string') return result || 'ok'
+  if (result && typeof result === 'object') {
+    const r = result as { text?: unknown; reply?: unknown }
+    if (typeof r.text === 'string') return r.text
+    if (typeof r.reply === 'string') return r.reply
+  }
+  return 'ok'
+}
+
+/**
+ * @description Extract the RESOLVED dedupe key from whatever runAgentTurn resolves — `null`
+ * when absent (a bare string result, or an object with no key), never `undefined`.
+ */
+function extractAgentReplyKey(result: unknown): string | null {
+  if (result && typeof result === 'object') {
+    const r = result as { key?: unknown; answeredBySubmissionId?: unknown }
+    if (typeof r.key === 'string') return r.key
+    if (typeof r.answeredBySubmissionId === 'string') return r.answeredBySubmissionId
+  }
+  return null
+}
+
 /** @description Fail-closed pt-br replies. */
 const FAIL_UNLINKED =
   'Desculpe, você não está vinculado a esta empresa no Gestão. Use /vincular para conectar sua conta Telegram.'
@@ -129,15 +185,13 @@ export async function handleBotTurn({
   botUsername,
   llmKeyEncryptionSecret,
   runAgentTurn,
-  insertTurnContext = realInsertTurnContext,
 }: {
   db: DbLike
   update: any
   botUsername: string
   llmKeyEncryptionSecret: string
-  runAgentTurn: (args: any) => Promise<string>
-  insertTurnContext?: (db: DbLike, input: any) => Promise<{ turn_token: string }>
-}) {
+  runAgentTurn: (args: any) => Promise<unknown>
+}): Promise<{ reply: string; answeredBySubmissionId: string | null }> {
   const telegramUserId = getTelegramUserId(update)
   const messageText = getMessageText(update)
 
@@ -146,7 +200,7 @@ export async function handleBotTurn({
   const isDm = isDmSurface(update)
 
   if (!isTopic && !isDm) {
-    return { reply: FAIL_UNLINKED }
+    return { reply: FAIL_UNLINKED, answeredBySubmissionId: null }
   }
 
   if (isDm) {
@@ -158,7 +212,7 @@ export async function handleBotTurn({
         .get(telegramUserId),
     )
     if (!userLink) {
-      return { reply: FAIL_UNLINKED }
+      return { reply: FAIL_UNLINKED, answeredBySubmissionId: null }
     }
     const userId = String(userLink.user_id)
 
@@ -166,7 +220,7 @@ export async function handleBotTurn({
     const empresas = await listEmpresasForUserOrdered(db, userId)
     if (empresas.length === 0) {
       await clearDmActiveEmpresa(db, userId)
-      return { reply: FAIL_N0 }
+      return { reply: FAIL_N0, answeredBySubmissionId: null }
     }
 
     let pin = await getDmActiveEmpresa(db, userId)
@@ -192,7 +246,10 @@ export async function handleBotTurn({
         if (selectorMatch.id !== priorEmpresaId) {
           await setDmPendingBoundary(db, userId, 1)
         }
-        return { reply: `Empresa ${selectorMatch.nome} definida como ativa.` }
+        return {
+          reply: `Empresa ${selectorMatch.nome} definida como ativa.`,
+          answeredBySubmissionId: null,
+        }
       }
       if (empresas.length === 1) {
         // N=1 auto-pin
@@ -204,7 +261,10 @@ export async function handleBotTurn({
         const listText = empresas
           .map((e, i) => `${i + 1}. ${e.nome} (${e.id})`)
           .join('\n')
-        return { reply: `Empresas disponíveis:\n${listText}` }
+        return {
+          reply: `Empresas disponíveis:\n${listText}`,
+          answeredBySubmissionId: null,
+        }
       }
     } else {
       empresaId = pin.empresa_id
@@ -214,48 +274,56 @@ export async function handleBotTurn({
     // now we have empresaId
     const llm = await loadEmpresaLlmForBot(db, empresaId, llmKeyEncryptionSecret)
     if (!llm.ok) {
-      return { reply: FAIL_LLM }
+      return { reply: FAIL_LLM, answeredBySubmissionId: null }
     }
 
-    const sessionId = buildSessionId({ kind: 'dm', userId })
+    const sessionId = buildSessionId({ kind: 'dm', empresaId, userId })
 
-    let dmBoundaryLine = null
+    let dmBoundaryLine: string | null = null
     if (pendingBoundary === 1) {
       dmBoundaryLine =
         'Atenção: resultados de ferramentas anteriores podem pertencer a outra empresa/tenant.'
     }
 
-    const turnInput = {
+    const attributes = buildSignalAttributes({
       empresaId,
       expertId,
       actorUserId: userId,
       surface: 'dm',
       provider: llm.provider,
       modelId: llm.model,
-      apiKey: llm.apiKey,
-      message: messageText,
-      encryptionSecret: llmKeyEncryptionSecret,
       dmBoundaryLine,
-    }
-    const { turn_token } = await insertTurnContext(db, turnInput)
+    })
+
+    // The DM boundary line is cleared exactly once, by the Worker, before dispatch — never
+    // inside the agent render, which runs ~2x per submission and must stay side-effect-free.
     if (pendingBoundary === 1) {
       await setDmPendingBoundary(db, userId, 0)
     }
-    const replyFromAgent = await runAgentTurn({
+
+    const signal: DispatchedSignal = {
+      kind: 'signal',
+      type: 'telegram.message',
+      body: messageText,
+      attributes,
+    }
+    const agentResult = await runAgentTurn({
       sessionId,
-      message: messageText,
-      turnToken: turn_token,
+      message: signal,
     })
-    return { reply: typeof replyFromAgent === 'string' ? replyFromAgent : 'ok' }
+    return {
+      reply: extractAgentReplyText(agentResult),
+      answeredBySubmissionId: extractAgentReplyKey(agentResult),
+    }
   } else if (isTopic) {
     const { chatId, threadId } = getTopicIds(update)
     const context = await resolveTelegramTopicContext(db, chatId, threadId)
     if (!context) {
-      return { reply: FAIL_UNLINKED }
+      return { reply: FAIL_UNLINKED, answeredBySubmissionId: null }
     }
     const actor = await resolveTelegramActor(db, telegramUserId, context.empresa_id)
     if (!actor.ok) {
-      return { reply: FAIL_UNLINKED }
+      return { reply: FAIL_UNLINKED, answeredBySubmissionId: null }
     }
     const llm = await loadEmpresaLlmForBot(
       db,
@@ -263,32 +331,36 @@ export async function handleBotTurn({
       llmKeyEncryptionSecret,
     )
     if (!llm.ok) {
-      return { reply: FAIL_LLM }
+      return { reply: FAIL_LLM, answeredBySubmissionId: null }
     }
     const sessionId = buildSessionId({
       kind: 'topic',
       chatId,
       threadId,
     })
-    const turnInput = {
+    const attributes = buildSignalAttributes({
       empresaId: context.empresa_id,
       expertId: context.expert_id,
       actorUserId: actor.userId,
       surface: 'topic',
       provider: llm.provider,
       modelId: llm.model,
-      apiKey: llm.apiKey,
-      message: messageText,
-      encryptionSecret: llmKeyEncryptionSecret,
-    }
-    const { turn_token } = await insertTurnContext(db, turnInput)
-    const replyFromAgent = await runAgentTurn({
-      sessionId,
-      message: messageText,
-      turnToken: turn_token,
     })
-    return { reply: typeof replyFromAgent === 'string' ? replyFromAgent : 'ok' }
+    const signal: DispatchedSignal = {
+      kind: 'signal',
+      type: 'telegram.message',
+      body: messageText,
+      attributes,
+    }
+    const agentResult = await runAgentTurn({
+      sessionId,
+      message: signal,
+    })
+    return {
+      reply: extractAgentReplyText(agentResult),
+      answeredBySubmissionId: extractAgentReplyKey(agentResult),
+    }
   }
 
-  return { reply: FAIL_UNLINKED }
+  return { reply: FAIL_UNLINKED, answeredBySubmissionId: null }
 }

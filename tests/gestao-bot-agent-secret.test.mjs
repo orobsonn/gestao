@@ -2,18 +2,22 @@
  * Locked gestao-bot agent HTTP secret guard contract.
  * Asserts middleware/guard rejects missing/wrong secret and empty env secret with 403.
  *
- * Expected production export (executor creates):
- *   createAgentSecretGuard from ../.flue/agents/gestao-bot.ts
+ * Expected production export (re-homed from .flue/agents/gestao-bot.ts):
+ *   createAgentSecretGuard from ../src/worker/middleware/agent-secret-guard.ts
  *
- * Contract:
- *   createAgentSecretGuard(env) → async (request: Request) => Response | null
+ * Contract (Hono middleware form):
+ *   createAgentSecretGuard(env) → MiddlewareHandler (c, next) => Response | void
  *   - Response status 403 when unauthorized (missing/wrong header, or env secret empty/missing)
- *   - null when header x-gestao-agent-internal-secret matches non-empty env secret
- *   Body of 403 must not look like a successful agent turn payload
+ *   - calls next() (passes through) when header x-gestao-agent-internal-secret matches non-empty env secret
+ *   - Body of 403 must not look like a successful agent turn payload
+ *
+ * The guard module is node-importable (no `cloudflare:` import), so it is driven
+ * directly via a minimal Hono app — no composed-worker fetch needed here.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createAgentSecretGuard } from "../.flue/agents/gestao-bot.ts";
+import { Hono } from "hono";
+import { createAgentSecretGuard } from "../src/worker/middleware/agent-secret-guard.ts";
 
 const SECRET_HEADER = "x-gestao-agent-internal-secret";
 const AGENT_PATH = "http://localhost/agents/gestao-bot/session-test-1";
@@ -54,15 +58,16 @@ function looksLikeSuccessfulAgentTurn(bodyText) {
 }
 
 /**
- * @description Invoke guard; supports Promise or sync Response|null.
- * @param {(req: Request) => unknown} guard
- * @param {Request} request
- * @returns {Promise<Response | null | undefined>}
+ * @description Build a minimal Hono app with the guard mounted on the agent
+ * path and a downstream marker handler that only runs on pass-through.
+ * @param {Record<string, unknown>} env
+ * @returns {Hono}
  */
-async function invokeGuard(guard, request) {
-  assert.equal(typeof guard, "function", "createAgentSecretGuard must return a function guard");
-  const out = await Promise.resolve(guard(request));
-  return /** @type {Response | null | undefined} */ (out);
+function buildApp(env) {
+  const app = new Hono();
+  app.use("/agents/gestao-bot/*", createAgentSecretGuard(env));
+  app.all("/agents/gestao-bot/*", (c) => c.json({ ok: true, result: "reached" }));
+  return app;
 }
 
 /**
@@ -81,6 +86,16 @@ function agentRequest(headers = {}, body = JSON.stringify({ message: "oi" })) {
   });
 }
 
+/**
+ * @description Drive the guarded app and return the response.
+ * @param {Record<string, unknown>} env
+ * @param {Request} request
+ */
+async function guardedFetch(env, request) {
+  const app = buildApp(env);
+  return app.fetch(request);
+}
+
 // ─── lt-agent-http-403-without-secret ──────────────────────────────────────
 
 /**
@@ -88,10 +103,8 @@ function agentRequest(headers = {}, body = JSON.stringify({ message: "oi" })) {
  */
 test("lt-agent-http-403-without-secret: missing or wrong secret header → 403, not success payload", async () => {
   const env = { GESTAO_AGENT_INTERNAL_SECRET: CONFIGURED_SECRET };
-  const guard = createAgentSecretGuard(env);
 
-  const missing = await invokeGuard(guard, agentRequest());
-  assert.ok(missing instanceof Response, "missing secret must return Response");
+  const missing = await guardedFetch(env, agentRequest());
   assert.equal(missing.status, 403, "missing secret header → 403");
   const missingBody = await missing.text();
   assert.equal(
@@ -100,11 +113,10 @@ test("lt-agent-http-403-without-secret: missing or wrong secret header → 403, 
     "403 body must not be a successful agent turn payload (missing secret)",
   );
 
-  const wrong = await invokeGuard(
-    guard,
+  const wrong = await guardedFetch(
+    env,
     agentRequest({ [SECRET_HEADER]: "wrong-secret-value" }),
   );
-  assert.ok(wrong instanceof Response, "wrong secret must return Response");
   assert.equal(wrong.status, 403, "wrong secret header → 403");
   const wrongBody = await wrong.text();
   assert.equal(
@@ -128,14 +140,9 @@ test("lt-agent-http-403-empty-env-secret: missing or empty env secret → always
   ];
 
   for (const env of emptyEnvs) {
-    const guard = createAgentSecretGuard(env);
     const label = JSON.stringify(env);
 
-    const noHeader = await invokeGuard(guard, agentRequest());
-    assert.ok(
-      noHeader instanceof Response,
-      `empty env (${label}) without header must return Response`,
-    );
+    const noHeader = await guardedFetch(env, agentRequest());
     assert.equal(
       noHeader.status,
       403,
@@ -148,13 +155,9 @@ test("lt-agent-http-403-empty-env-secret: missing or empty env secret → always
     );
 
     // Even a non-empty header must not open the agent when env secret is empty/missing
-    const withHeader = await invokeGuard(
-      guard,
+    const withHeader = await guardedFetch(
+      env,
       agentRequest({ [SECRET_HEADER]: "any-client-supplied-secret" }),
-    );
-    assert.ok(
-      withHeader instanceof Response,
-      `empty env (${label}) with header must return Response`,
     );
     assert.equal(
       withHeader.status,

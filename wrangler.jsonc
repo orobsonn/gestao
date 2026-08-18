@@ -1,7 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "gestao",
-  "main": "./src/worker/index.ts",
   "compatibility_date": "2026-07-20",
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
@@ -24,18 +23,15 @@
       "migrations_dir": "migrations"
     }
   ],
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "FLUE_GESTAO_BOT_AGENT",
-        "class_name": "FlueGestaoBotAgent"
-      }
-    ]
-  },
   "migrations": [
     {
       "tag": "v2",
       "new_sqlite_classes": ["FlueRegistry", "FlueGestaoBotAgent"]
+    },
+    {
+      "tag": "v3",
+      "deleted_classes": ["FlueRegistry", "FlueGestaoBotAgent"],
+      "new_sqlite_classes": ["FlueGestaoBotV2Agent"]
     }
   ]
 }

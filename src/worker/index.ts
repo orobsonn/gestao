@@ -10,7 +10,10 @@ import { createTelegramApp } from './routes/telegram.ts'
 import { runAgentTurn } from './agent/run-agent-turn.ts'
 import type { BatchDbLike, BatchStatement } from './services/create-empresa.ts'
 import type { DbLike, StatementLike } from './types.ts'
-import { flue } from '@flue/runtime/routing'
+import { createAgentRouter } from '@flue/runtime/routing'
+import { init } from '@flue/runtime'
+import { GestaoBot } from '../../.flue/agents/gestao-bot.ts'
+import { agentSecretGuard } from './middleware/agent-secret-guard.ts'
 
 /**
  * @description Worker bindings: D1, static assets, optional super-admin bootstrap secrets,
@@ -132,24 +135,13 @@ app.all('/api/telegram/*', (c) => {
     llmKeyEncryptionSecret: c.env.LLM_KEY_ENCRYPTION_SECRET,
     waitUntil,
     agentInternalSecret: c.env.GESTAO_AGENT_INTERNAL_SECRET,
+    // In-process agent handle — no more internal HTTP hop (the wait-for-result query param
+    // does not exist in Flue 2.x). init() performs no I/O and is safe to build per request/turn.
     runAgentTurn: (args) =>
       runAgentTurn({
         sessionId: args.sessionId,
         message: args.message,
-        turnToken: args.turnToken,
-        agentInternalSecret: c.env.GESTAO_AGENT_INTERNAL_SECRET ?? '',
-        app: {
-          // Hono fetch wants a Request; runAgentTurn passes (url, init) — must not drop init.
-          fetch: async (input, init) => {
-            const req =
-              input instanceof Request
-                ? input
-                : new Request(String(input), init)
-            // Hono's fetch is Response | Promise<Response>; the port takes a Promise. `async`
-            // normalizes the sync branch instead of widening the port's contract.
-            return app.fetch(req, c.env, c.executionCtx)
-          },
-        },
+        port: init(GestaoBot, { id: args.sessionId }),
       }),
     botToken: c.env.TELEGRAM_BOT_TOKEN,
     webhookSecret: c.env.TELEGRAM_WEBHOOK_SECRET,
@@ -158,9 +150,17 @@ app.all('/api/telegram/*', (c) => {
 })
 
 /**
- * @description Mount Flue agent routes (gestao-bot) BEFORE ASSETS catch-all so agent HTTP is not swallowed by SPA.
+ * @description Mount gestao-bot agent routes BEFORE ASSETS catch-all so agent HTTP is not swallowed by SPA.
+ *
+ * Flue 2.x `createAgentRouter` serves POST /:id, GET|HEAD /:id (FULL conversation
+ * history — a tenant-data read), POST /:id/abort and GET /:id/attachments/:aid
+ * with NO built-in auth, and conversation ids are guessable. The internal-secret
+ * guard is registered with a `/*` suffix BEFORE the mount so it covers every
+ * route — never use the `app.post(...)` form the beta guard effectively had,
+ * which left the history-read route open.
  */
-app.route('/', flue())
+app.use('/agents/gestao-bot/*', agentSecretGuard)
+app.route('/agents/gestao-bot', createAgentRouter(GestaoBot))
 
 /**
  * @description Non-API: serve SPA/static assets (run_worker_first + not_found SPA).

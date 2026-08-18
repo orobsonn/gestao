@@ -13,6 +13,7 @@ import {
 } from '../services/telegram-bind-expert.ts'
 import { claimTelegramUpdateId } from '../services/telegram-webhook-dedup.ts'
 import { handleBotTurn } from '../services/bot-turn-orchestrator.ts'
+import { claimAgentReplySend } from '../services/agent-reply-send-guard.ts'
 
 const WEBHOOK_PATH = '/api/telegram/webhook'
 const SECRET_HEADER = 'X-Telegram-Bot-Api-Secret-Token'
@@ -86,7 +87,7 @@ export type TelegramAppDeps = {
   // `Promise<unknown> | unknown` collapses to `unknown`, which is WIDER than the platform's
   // waitUntil and so nothing real could be assigned to it. Only promises are ever passed.
   waitUntil?: (p: Promise<unknown>) => void
-  runAgentTurn?: (args: any) => Promise<string>
+  runAgentTurn?: (args: any) => Promise<unknown>
   agentInternalSecret?: string
 }
 
@@ -659,42 +660,55 @@ export function createTelegramApp(
           llmKeyEncryptionSecret: deps.llmKeyEncryptionSecret,
           runAgentTurn: deps.runAgentTurn,
         })
-          .then((result: any) => {
-            if (result && typeof result.reply === 'string' && result.reply.trim()) {
-              const msg =
-                body != null &&
-                typeof body === 'object' &&
-                'message' in body &&
-                (body as { message: unknown }).message != null &&
-                typeof (body as { message: unknown }).message === 'object'
-                  ? (body as { message: Record<string, unknown> }).message
-                  : null
-              const chat =
-                msg && typeof msg === 'object' && 'chat' in msg && msg.chat != null && typeof msg.chat === 'object'
-                  ? (msg.chat as Record<string, unknown>)
-                  : null
-              const chatId =
-                chat && (typeof chat.id === 'number' || typeof chat.id === 'string') ? chat.id : null
-              // Read once into a local: narrowing a `(msg as Record<...>).x` expression does not
-              // carry into a branch that re-reads the same cast, so the value stayed `unknown`.
-              const rawThreadId =
-                msg && typeof msg === 'object' && 'message_thread_id' in msg
-                  ? (msg as Record<string, unknown>).message_thread_id
-                  : undefined
-              const threadId =
-                typeof rawThreadId === 'number' || typeof rawThreadId === 'string'
-                  ? rawThreadId
-                  : undefined
-              if (chatId != null) {
-                return sendTelegramMessage(
-                  deps,
-                  chatId,
-                  result.reply,
-                  threadId,
-                  'Markdown',
-                )
+          .then(async (result: any) => {
+            if (!result || typeof result.reply !== 'string' || !result.reply.trim()) {
+              return
+            }
+            const msg =
+              body != null &&
+              typeof body === 'object' &&
+              'message' in body &&
+              (body as { message: unknown }).message != null &&
+              typeof (body as { message: unknown }).message === 'object'
+                ? (body as { message: Record<string, unknown> }).message
+                : null
+            const chat =
+              msg && typeof msg === 'object' && 'chat' in msg && msg.chat != null && typeof msg.chat === 'object'
+                ? (msg.chat as Record<string, unknown>)
+                : null
+            const chatId =
+              chat && (typeof chat.id === 'number' || typeof chat.id === 'string') ? chat.id : null
+            // Read once into a local: narrowing a `(msg as Record<...>).x` expression does not
+            // carry into a branch that re-reads the same cast, so the value stayed `unknown`.
+            const rawThreadId =
+              msg && typeof msg === 'object' && 'message_thread_id' in msg
+                ? (msg as Record<string, unknown>).message_thread_id
+                : undefined
+            const threadId =
+              typeof rawThreadId === 'number' || typeof rawThreadId === 'string'
+                ? rawThreadId
+                : undefined
+            if (chatId == null) {
+              return
+            }
+
+            // A resolved dedupe key (agent-turn success/empty-terminate) is guarded by
+            // claimAgentReplySend — only the FIRST processor to claim it may post. A
+            // null/absent key (gate copies, DM bootstrap/pin copies, SAFE_REPLY) is never
+            // routed through the claim: those must post unconditionally, or an unlinked
+            // user's reply would be silently swallowed by the guard.
+            const key =
+              typeof result.answeredBySubmissionId === 'string' && result.answeredBySubmissionId
+                ? result.answeredBySubmissionId
+                : null
+            if (key) {
+              const { claimed } = await claimAgentReplySend(db, key)
+              if (!claimed) {
+                return
               }
             }
+
+            return sendTelegramMessage(deps, chatId, result.reply, threadId, 'Markdown')
           })
           .catch(() => {})
 

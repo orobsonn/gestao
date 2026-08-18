@@ -26,6 +26,8 @@ D1 SQL migrations for the gestao multi-tenant schema.
 | `0007_telegram_agent_support.sql` | Forward: `telegram_webhook_updates` (update_id PK for dedup), `telegram_dm_active_empresa` (user_id PK, empresa_id FK, pending_boundary 0|1), `telegram_agent_turn_context` (turn_token PK, ciphertext+iv NOT NULL, composite nullable expert FK). |
 | `0008_empresa_llm_model.sql` | Forward: nullable provider-native `model_id` on `empresa_llm_settings`; legacy settings remain null. |
 | `0009_telegram_turn_model.sql` | Forward: nullable **provider-namespaced** `model_id` on `telegram_agent_turn_context` (e.g. `openai/gpt-4o-mini`) — note this is the OPPOSITE format from `0008`, which stores the provider-native id. Legacy contexts remain compatible. |
+| `0010_telegram_agent_reply_send_guard.sql` | Forward: `telegram_agent_reply_sends` (PK `answered_by_submission_id`, `created_at` timestamp) for duplicate reply guard. |
+| `0011_drop_telegram_agent_turn_context.sql` | Forward: `DROP TABLE telegram_agent_turn_context`. The D1 turn-context bridge is gone — the turn's non-secret facts (`empresaId`, `expertId`, `actorUserId`, `surface`, `provider`, `modelId`, `dmBoundaryLine`) now ride the dispatched signal's `attributes` instead of a row keyed by the shared topic agent id (root cause of a `turn_token` PRIMARY KEY collision that dropped a second user's message and could wedge a topic permanently). |
 
 ### Hermetic openDb rule (tests + local)
 
@@ -40,3 +42,32 @@ Skipping files or applying out of order breaks the chain contract locked by `tes
 ## Hierarchy (v1)
 
 `Empresa → Expert → Campanha → Tarefa` only. No `projects` / `tasks` synonym tables.
+
+## Deploy order for `0011_drop_telegram_agent_turn_context.sql` (accepted trade-off)
+
+Migration `0011` DROPs `telegram_agent_turn_context`, a table the still-live beta Worker **reads**
+on every turn. The decided order for this migration is:
+
+**migrate-all → build → deploy**
+
+i.e. `npm run db:migrate` (applies `0010` + `0011` to prod D1) runs and completes **before** the new
+Worker is built and deployed. This accepts a short window — between the migration landing and the
+new Worker going live — where the still-running beta Worker's read against the now-dropped table
+fails.
+
+**Why this order, and why the window is accepted:**
+
+- The new Worker needs `0010`'s send-guard table (`telegram_agent_reply_sends`) in place **before**
+  its very first turn — reversing the order (deploy first, migrate after) would leave the new Worker
+  without the guard it depends on for its own first requests.
+- The beta turn path this window can degrade is **already broken** — `0011` exists specifically to
+  fix the `turn_token` PRIMARY KEY collision in the D1 turn-context bridge that could drop a second
+  user's message and wedge a topic permanently (see `turn-context-attributes-not-d1` in
+  `MEMORY.md`). The window trades a few extra minutes of an already-known-broken path for a clean
+  cutover, not a regression from a healthy state.
+- **Blast radius at decision time:** production has **0 linked Telegram groups, 0 linked topics, 1
+  linked Telegram user.** The window's worst case is one DM user's bot reply failing for the minutes
+  between migration and deploy — not a multi-tenant incident.
+
+This is a written trade-off, not silence: do not "fix" the ordering to be simultaneous or
+deploy-first without re-evaluating the send-guard dependency above.

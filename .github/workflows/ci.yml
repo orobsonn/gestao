@@ -41,6 +41,12 @@ jobs:
       - name: Typecheck
         run: npx tsc -b
 
+      # Runs BEFORE the test step so the artifact tests (tests/flue2-build-artifact.test.mjs) find
+      # dist/ already present and skip their own build — the artifact test still builds on its own
+      # when dist/ is absent, so it can never pass vacuously against a stale/missing artifact.
+      - name: Build
+        run: npm run build
+
       - name: Tests
         # `node --test` exits 0 when it discovers ZERO files — a green run that verified nothing.
         # The floor is a discovery tripwire, not a coverage target: it only has to be far below the

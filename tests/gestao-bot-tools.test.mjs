@@ -1,7 +1,10 @@
 /**
  * Locked gestao bot tools contract — createGestaoBotTools tenant closures.
  * Hermetic: node:sqlite :memory:, PRAGMA foreign_keys=ON, every migrations/*.sql sorted.
- * Invokes tools by name via ToolDefinition.run({ input }); mocks sendNotify.
+ * Invokes tools by name via ToolDefinition.run({ data }) (Flue 2.x); the run resolves a
+ * ToolRunEnvelope { output?, terminate? }. Helpers unwrap the envelope so the behavioural
+ * assertions (tenant closure, DB effects, error branches) read the payload as before.
+ * mocks sendNotify.
  */
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -373,60 +376,81 @@ function getTool(tools, name) {
 }
 
 /**
- * @description Invoke a Flue ToolDefinition via run({ input }).
+ * @description Invoke a Flue 2.x ToolDefinition via run({ data }) and return the
+ * resolved ToolRunEnvelope ({ output?, terminate? }).
  * @param {{ run: Function }} tool
- * @param {Record<string, unknown>} [input]
+ * @param {Record<string, unknown>} [data]
  */
-async function invokeTool(tool, input = {}) {
+async function invokeTool(tool, data = {}) {
   assert.equal(typeof tool.run, "function", "tool must expose run()");
-  return tool.run({ input });
+  return tool.run({ data });
 }
 
 /**
- * @description Flatten tool result to searchable text.
+ * @description Unwrap a Flue 2.x ToolRunEnvelope to its `output` payload. Fails hard
+ * if the value is not a real envelope — the beta bare-object shape must not slip
+ * through the oracle.
+ * @param {unknown} result
+ */
+function payloadOf(result) {
+  if (
+    result !== null &&
+    typeof result === "object" &&
+    Object.hasOwn(/** @type {object} */ (result), "output")
+  ) {
+    return /** @type {{ output: unknown }} */ (result).output;
+  }
+  assert.fail(
+    "tool result must be a Flue 2.x envelope owning output, got: " +
+      JSON.stringify(result),
+  );
+}
+
+/**
+ * @description Flatten a tool result (envelope or payload) to searchable text.
+ * Stringifies the `output` payload, not the envelope wrapper.
  * @param {unknown} result
  */
 function resultText(result) {
-  if (result == null) return "";
-  if (typeof result === "string") return result;
+  const payload = payloadOf(result);
+  if (payload == null) return "";
+  if (typeof payload === "string") return payload;
   try {
-    return JSON.stringify(result);
+    return JSON.stringify(payload);
   } catch {
-    return String(result);
+    return String(payload);
   }
 }
 
 /**
- * @description True when tool result signals terminal end-turn / stop.
+ * @description True when tool envelope signals terminal end-turn / stop. Under Flue 2.x
+ * the terminal flag is `terminate: true` on the envelope (the beta `terminal: true`
+ * payload key is gone). Reads the envelope, not the unwrapped payload.
  * @param {unknown} result
  */
 function isTerminalStopResult(result) {
   if (result && typeof result === "object") {
     const r = /** @type {Record<string, unknown>} */ (result);
-    if (r.terminal === true || r.end_turn === true || r.stop === true) {
-      return true;
-    }
-    if (
-      r.status === "terminal" ||
-      r.status === "end_turn" ||
-      r.status === "stop" ||
-      r.action === "end_turn" ||
-      r.action === "stop"
-    ) {
-      return true;
-    }
+    assert.equal(
+      Object.hasOwn(r, "terminal"),
+      false,
+      "Flue 2.x envelope must not contain legacy beta `terminal` key",
+    );
+    return r.terminate === true;
   }
-  return /terminal|end[_-]?turn|\bstop\b/i.test(resultText(result));
+  return false;
 }
 
 /**
  * @description True when result indicates model must ask which campaign / none open.
  * Requires clear ask/require semantics — not mere presence of a status field.
+ * Reads the envelope's `output` payload.
  * @param {unknown} result
  */
 function indicatesAskCampaign(result) {
-  if (result && typeof result === "object") {
-    const status = /** @type {Record<string, unknown>} */ (result).status;
+  const payload = payloadOf(result);
+  if (payload && typeof payload === "object") {
+    const status = /** @type {Record<string, unknown>} */ (payload).status;
     if (
       status === "need_campaign" ||
       status === "ask_campaign" ||
@@ -443,7 +467,7 @@ function indicatesAskCampaign(result) {
 
 /**
  * @description True when result requires explicit campanha_id (DM no LD-6).
- * Requires campanha_id token AND an obligation/required cue.
+ * Requires campanha_id token AND an obligation/required cue. Reads the payload text.
  * @param {unknown} result
  */
 function indicatesRequiresCampanhaId(result) {
@@ -456,6 +480,7 @@ function indicatesRequiresCampanhaId(result) {
 
 /**
  * @description True when result is a not-found / reject without leaking foreign tenant data.
+ * Reads the envelope's `output` payload for ok/error and stringifies the payload for text.
  * @param {unknown} result
  * @param {string} foreignEmpresaId
  */
@@ -465,14 +490,15 @@ function isRejectNoLeak(result, foreignEmpresaId) {
     !text.includes(foreignEmpresaId),
     "reject must not leak foreign empresa id",
   );
+  const payload = payloadOf(result);
   return (
     /n[aã]o\s+encontr|not\s*found|inv[aá]lid|rejeit|negad|erro|error|fail/i.test(
       text,
     ) ||
-    (result &&
-      typeof result === "object" &&
-      (/** @type {Record<string, unknown>} */ (result).ok === false ||
-        /** @type {Record<string, unknown>} */ (result).error != null))
+    (payload &&
+      typeof payload === "object" &&
+      (/** @type {Record<string, unknown>} */ (payload).ok === false ||
+        /** @type {Record<string, unknown>} */ (payload).error != null))
   );
 }
 
@@ -1119,14 +1145,15 @@ test("lt-topic-criar-tarefa-cross-expert-campanha-rejects: cross-expert campanha
   });
   assert.equal(countTarefas(db), before, "no tarefas row must be inserted");
   const text = resultText(result);
+  const payload = payloadOf(result);
   const looksReject =
     /n[aã]o\s+encontr|inv[aá]lid|n[aã]o\s+pertence|campanha|expert|rejeit|erro|not\s*found|fail/i.test(
       text,
     ) ||
-    (result &&
-      typeof result === "object" &&
-      (/** @type {Record<string, unknown>} */ (result).ok === false ||
-        /** @type {Record<string, unknown>} */ (result).error != null));
+    (payload &&
+      typeof payload === "object" &&
+      (/** @type {Record<string, unknown>} */ (payload).ok === false ||
+        /** @type {Record<string, unknown>} */ (payload).error != null));
   assert.ok(looksReject, "tool result must be reject/not-found");
   // #ac-topic-camp.1 — pt-br reject copy (accented tokens or common pt words)
   assert.ok(
@@ -1293,6 +1320,212 @@ test("lt-definir-empresa-ativa-sets-pin-and-pending-boundary: pin B + pending_bo
     isTerminalStopResult(result),
     "tool result must be terminal (signals end-turn / stop)",
   );
+
+  db.close();
+});
+
+// ─── lt-tools-batch-latch-after-empresa-switch ─────────────────────────────
+
+/**
+ * @description After definir_empresa_ativa switches empresa in a DM batch, sibling
+ * mutating tools in the same factory closure abort instead of writing under the old
+ * tenant. Reverse order (write then switch) must still work.
+ */
+test("lt-tools-batch-latch-after-empresa-switch: switch blocks sibling writes in same batch", async () => {
+  const db = openDb();
+  const actorId = "user-actor";
+  const empA = "emp-A";
+  const empB = "emp-B";
+  seedEmpresa(db, { id: empA, nome: "Empresa A" });
+  seedEmpresa(db, { id: empB, nome: "Empresa B" });
+  seedUser(db, { id: actorId, name: "Actor" });
+  seedMembro(db, empA, actorId);
+  seedMembro(db, empB, actorId);
+  const expertA = seedExpert(db, { id: "expert-A", empresaId: empA });
+  const campA = seedCampanha(db, {
+    id: "camp-A",
+    empresaId: empA,
+    expertId: expertA.id,
+    status: "aberta",
+  });
+
+  const tools = buildTools(db, {
+    empresa_id: empA,
+    expert_id: null,
+    actor_user_id: actorId,
+    surface: "dm",
+  });
+
+  // Switch then write: the write must abort before touching the DB.
+  const switchResult = await invokeTool(
+    getTool(tools, "definir_empresa_ativa"),
+    { empresa_id: empB },
+  );
+  assert.ok(isTerminalStopResult(switchResult), "switch result must be terminal");
+
+  const badCreate = await invokeTool(getTool(tools, "criar_tarefa"), {
+    titulo: "nao deve gravar",
+  });
+  const badPayload = payloadOf(badCreate);
+  assert.equal(
+    /** @type {Record<string, unknown>} */ (badPayload).ok,
+    false,
+    "criar_tarefa after switch must resolve ok:false",
+  );
+  assert.equal(
+    /** @type {Record<string, unknown>} */ (badPayload).error,
+    "A empresa ativa mudou neste turno. Refaça o pedido.",
+  );
+  assert.equal(
+    getTarefaByTitulo(db, "nao deve gravar"),
+    undefined,
+    "no tarefa row must exist after latch blocks create",
+  );
+
+  // Reverse order (write then switch) must keep working — latch only blocks after a switch.
+  const reverseTools = buildTools(db, {
+    empresa_id: empA,
+    expert_id: null,
+    actor_user_id: actorId,
+    surface: "dm",
+  });
+  const goodCreate = await invokeTool(getTool(reverseTools, "criar_tarefa"), {
+    titulo: "deve gravar",
+    campanha_id: campA.id,
+  });
+  const goodPayload = payloadOf(goodCreate);
+  assert.equal(
+    /** @type {Record<string, unknown>} */ (goodPayload).ok,
+    true,
+    "create before switch must succeed",
+  );
+  assert.equal(
+    getTarefaByTitulo(db, "deve gravar")?.empresa_id,
+    empA,
+    "create before switch must persist under original empresa A",
+  );
+  const reverseSwitch = await invokeTool(
+    getTool(reverseTools, "definir_empresa_ativa"),
+    { empresa_id: empB },
+  );
+  assert.ok(
+    isTerminalStopResult(reverseSwitch),
+    "reverse switch result must be terminal",
+  );
+
+  // Parallel batch: promises start in the same tick; the write must abort.
+  // Seed a THIRD empresa so the parallel switch takes the MUTATING path — the
+  // reverse block already pinned emp-B, so switching to emp-B again would hit
+  // the no-op branch and never arm the latch.
+  const empC = "emp-C";
+  seedEmpresa(db, { id: empC, nome: "Empresa C" });
+  seedMembro(db, empC, actorId);
+  const batchTools = buildTools(db, {
+    empresa_id: empA,
+    expert_id: null,
+    actor_user_id: actorId,
+    surface: "dm",
+  });
+  const pSwitch = getTool(batchTools, "definir_empresa_ativa").run({
+    data: { empresa_id: empC },
+  });
+  const pCreate = getTool(batchTools, "criar_tarefa").run({
+    data: { titulo: "batch paralelo", campanha_id: campA.id },
+  });
+  const [parallelSwitchResult, createResult] = await Promise.all([pSwitch, pCreate]);
+  assert.ok(
+    isTerminalStopResult(parallelSwitchResult),
+    "parallel switch result must be terminal",
+  );
+  const batchPayload = payloadOf(createResult);
+  assert.equal(
+    /** @type {Record<string, unknown>} */ (batchPayload).ok,
+    false,
+    "parallel criar_tarefa must resolve ok:false",
+  );
+  assert.equal(
+    /** @type {Record<string, unknown>} */ (batchPayload).error,
+    "A empresa ativa mudou neste turno. Refaça o pedido.",
+  );
+  assert.equal(
+    getTarefaByTitulo(db, "batch paralelo"),
+    undefined,
+    "no tarefa row must exist for parallel batch",
+  );
+  const parallelPin = db
+    .prepare(
+      `SELECT empresa_id FROM telegram_dm_active_empresa WHERE user_id = ?`,
+    )
+    .get(actorId);
+  assert.equal(
+    /** @type {{ empresa_id?: string }} */ (parallelPin)?.empresa_id,
+    empC,
+    "parallel switch must take the mutating path and pin the third empresa",
+  );
+
+  db.close();
+});
+
+// ─── lt-tools-noop-switch-does-not-block-sibling-write ──────────────────────
+
+/**
+ * @description A no-op definir_empresa_ativa (target equals the closure empresa) must NOT
+ * arm the empresaSwitchInFlight latch, so a sibling criar_tarefa started in the same
+ * event-loop turn still writes its row. The no-op short-circuits before the latch is armed.
+ * Remove that short-circuit and the switch arms the latch synchronously (before its first
+ * await), blocking the sibling — so this oracle goes RED against that mutation.
+ */
+test("lt-tools-noop-switch-does-not-block-sibling-write: no-op switch keeps sibling write alive", async () => {
+  const db = openDb();
+  const actorId = "user-actor";
+  const empA = "emp-A";
+  seedEmpresa(db, { id: empA, nome: "Empresa A" });
+  seedUser(db, { id: actorId, name: "Actor" });
+  seedMembro(db, empA, actorId);
+  const expertA = seedExpert(db, { id: "expert-A", empresaId: empA });
+  const campA = seedCampanha(db, {
+    id: "camp-A",
+    empresaId: empA,
+    expertId: expertA.id,
+    status: "aberta",
+  });
+  // Pin the actor's active empresa to A so switching to A is a genuine no-op.
+  await upsertDmActiveEmpresa(db, actorId, empA);
+
+  const tools = buildTools(db, {
+    empresa_id: empA,
+    expert_id: null,
+    actor_user_id: actorId,
+    surface: "dm",
+  });
+
+  // Same event-loop turn, in call order — mirrors the parallel block of
+  // lt-tools-batch-latch-after-empresa-switch. No await between the two runs.
+  const pSwitch = getTool(tools, "definir_empresa_ativa").run({
+    data: { empresa_id: empA },
+  });
+  const pCreate = getTool(tools, "criar_tarefa").run({
+    data: { titulo: "no-op permite escrita", campanha_id: campA.id },
+  });
+  const [, createResult] = await Promise.all([pSwitch, pCreate]);
+
+  const createPayload = payloadOf(createResult);
+  assert.notEqual(
+    /** @type {Record<string, unknown>} */ (createPayload).ok,
+    false,
+    "no-op switch must not block the sibling criar_tarefa (ok must not be false)",
+  );
+  assert.notEqual(
+    /** @type {Record<string, unknown>} */ (createPayload).error,
+    "A empresa ativa mudou neste turno. Refaça o pedido.",
+    "no-op switch must not arm the latch refusal on the sibling create",
+  );
+
+  // Load-bearing: the row must exist under empresa A. With the no-op short-circuit
+  // removed, the sibling is refused and no row is written — this assertion goes RED.
+  const row = getTarefaByTitulo(db, "no-op permite escrita");
+  assert.ok(row, "tarefa with titulo 'no-op permite escrita' must exist");
+  assert.equal(row.empresa_id, empA, "tarefa must carry empresa A");
 
   db.close();
 });
