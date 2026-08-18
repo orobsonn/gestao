@@ -1,0 +1,1 @@
+DROP TABLE telegram_agent_turn_context;

@@ -1,4 +1,9 @@
-/** @description Bot turn orchestrator: surface→actor→dm-pin→llm→session→turnrow→agent gates. Writes turn context then calls runAgentTurn (message-only body). apiKey only via insertTurnContext. DM pin bootstrap/list/revalidate per LD-18. pending_boundary injects dm_boundary_line. Fail-closed pt-br. */
+/** @description Bot turn orchestrator: surface→actor→dm-pin→llm→session→signal→agent gates.
+ *  Dispatches a `{ kind: 'signal', type: 'telegram.message', body, attributes }` message to
+ *  runAgentTurn instead of writing a D1 turn-context row — the closed attribute set carries no
+ *  key material; the agent re-resolves+decrypts the LLM key itself inside the Durable Object.
+ *  DM pin bootstrap/list/revalidate per LD-18. pending_boundary injects dmBoundaryLine once, then
+ *  is cleared by the Worker before dispatch. Fail-closed pt-br. */
 import { resolveTelegramTopicContext } from './resolve-telegram-topic-context.ts'
 import { resolveTelegramActor } from './telegram-actor-gate.ts'
 import { loadEmpresaLlmForBot } from './empresa-llm-gate.ts'
@@ -9,7 +14,6 @@ import {
   clearDmActiveEmpresa,
   setDmPendingBoundary,
 } from './telegram-dm-active-empresa.ts'
-import { insertTurnContext as realInsertTurnContext } from '../agent/turn-context-store.ts'
 import type { DbLike } from '../types.ts'
 
 /** Wire shape of the slice of a Telegram update this orchestrator reads. Every field is optional:
@@ -71,6 +75,30 @@ function getTopicIds(update: TelegramUpdate | null | undefined): { chatId: strin
     chatId: String(msg.chat?.id ?? ''),
     threadId: String(msg.message_thread_id ?? ''),
   }
+}
+
+/**
+ * @description Build the dispatched signal's `attributes` string-to-string map. The closed
+ * attribute set is the CLOSED contract — every key/value here is emitted VERBATIM into the
+ * model's context by the runtime (renderSignalMessage), so never include key material. A
+ * null/undefined/empty-string candidate value is OMITTED (never coerced to the string `'null'`).
+ */
+function buildSignalAttributes(candidate: Record<string, string | null | undefined>): Record<string, string> {
+  const attributes: Record<string, string> = {}
+  for (const [key, value] of Object.entries(candidate)) {
+    if (value === null || value === undefined || value === '') continue
+    attributes[key] = value
+  }
+  return attributes
+}
+
+/** Wire shape of the signal message dispatched to runAgentTurn in place of the deleted D1
+ *  turn-context row. */
+type DispatchedSignal = {
+  kind: 'signal'
+  type: 'telegram.message'
+  body: string
+  attributes: Record<string, string>
 }
 
 /**
@@ -157,14 +185,12 @@ export async function handleBotTurn({
   botUsername,
   llmKeyEncryptionSecret,
   runAgentTurn,
-  insertTurnContext = realInsertTurnContext,
 }: {
   db: DbLike
   update: any
   botUsername: string
   llmKeyEncryptionSecret: string
   runAgentTurn: (args: any) => Promise<unknown>
-  insertTurnContext?: (db: DbLike, input: any) => Promise<{ turn_token: string }>
 }): Promise<{ reply: string; answeredBySubmissionId: string | null }> {
   const telegramUserId = getTelegramUserId(update)
   const messageText = getMessageText(update)
@@ -253,32 +279,37 @@ export async function handleBotTurn({
 
     const sessionId = buildSessionId({ kind: 'dm', empresaId, userId })
 
-    let dmBoundaryLine = null
+    let dmBoundaryLine: string | null = null
     if (pendingBoundary === 1) {
       dmBoundaryLine =
         'Atenção: resultados de ferramentas anteriores podem pertencer a outra empresa/tenant.'
     }
 
-    const turnInput = {
+    const attributes = buildSignalAttributes({
       empresaId,
       expertId,
       actorUserId: userId,
       surface: 'dm',
       provider: llm.provider,
       modelId: llm.model,
-      apiKey: llm.apiKey,
-      message: messageText,
-      encryptionSecret: llmKeyEncryptionSecret,
       dmBoundaryLine,
-    }
-    const { turn_token } = await insertTurnContext(db, turnInput)
+    })
+
+    // The DM boundary line is cleared exactly once, by the Worker, before dispatch — never
+    // inside the agent render, which runs ~2x per submission and must stay side-effect-free.
     if (pendingBoundary === 1) {
       await setDmPendingBoundary(db, userId, 0)
     }
+
+    const signal: DispatchedSignal = {
+      kind: 'signal',
+      type: 'telegram.message',
+      body: messageText,
+      attributes,
+    }
     const agentResult = await runAgentTurn({
       sessionId,
-      message: messageText,
-      turnToken: turn_token,
+      message: signal,
     })
     return {
       reply: extractAgentReplyText(agentResult),
@@ -307,22 +338,23 @@ export async function handleBotTurn({
       chatId,
       threadId,
     })
-    const turnInput = {
+    const attributes = buildSignalAttributes({
       empresaId: context.empresa_id,
       expertId: context.expert_id,
       actorUserId: actor.userId,
       surface: 'topic',
       provider: llm.provider,
       modelId: llm.model,
-      apiKey: llm.apiKey,
-      message: messageText,
-      encryptionSecret: llmKeyEncryptionSecret,
+    })
+    const signal: DispatchedSignal = {
+      kind: 'signal',
+      type: 'telegram.message',
+      body: messageText,
+      attributes,
     }
-    const { turn_token } = await insertTurnContext(db, turnInput)
     const agentResult = await runAgentTurn({
       sessionId,
-      message: messageText,
-      turnToken: turn_token,
+      message: signal,
     })
     return {
       reply: extractAgentReplyText(agentResult),

@@ -27,6 +27,7 @@ D1 SQL migrations for the gestao multi-tenant schema.
 | `0008_empresa_llm_model.sql` | Forward: nullable provider-native `model_id` on `empresa_llm_settings`; legacy settings remain null. |
 | `0009_telegram_turn_model.sql` | Forward: nullable **provider-namespaced** `model_id` on `telegram_agent_turn_context` (e.g. `openai/gpt-4o-mini`) — note this is the OPPOSITE format from `0008`, which stores the provider-native id. Legacy contexts remain compatible. |
 | `0010_telegram_agent_reply_send_guard.sql` | Forward: `telegram_agent_reply_sends` (PK `answered_by_submission_id`, `created_at` timestamp) for duplicate reply guard. |
+| `0011_drop_telegram_agent_turn_context.sql` | Forward: `DROP TABLE telegram_agent_turn_context`. The D1 turn-context bridge is gone — the turn's non-secret facts (`empresaId`, `expertId`, `actorUserId`, `surface`, `provider`, `modelId`, `dmBoundaryLine`) now ride the dispatched signal's `attributes` instead of a row keyed by the shared topic agent id (root cause of a `turn_token` PRIMARY KEY collision that dropped a second user's message and could wedge a topic permanently). |
 
 ### Hermetic openDb rule (tests + local)
 
