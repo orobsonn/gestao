@@ -42,47 +42,46 @@ const playbook = `**Playbook gestao-bot (pt-br) — respostas no Telegram**
 - Nunca invente tenant/expert ids nem dados de outra empresa.
 - Se houver DM boundary line, avise que resultados anteriores podem ser de outra empresa.`;
 
-function asDbLike(d1: unknown): DbLike {
-  if (
-    d1 != null &&
-    typeof d1 === 'object' &&
-    typeof (d1 as { prepare?: unknown }).prepare === 'function' &&
-    (d1 as { prepare: () => { get?: { length: number } } }).prepare('').get?.length !== undefined
-  ) {
-    return d1 as DbLike;
-  }
+function asDbLike(d1: D1Database): DbLike {
   return {
-    prepare(sql: string) {
-      const stmt = (d1 as { prepare: (sql: string) => unknown }).prepare(sql);
+    prepare(sql) {
+      const stmt = d1.prepare(sql);
       return {
-        bind(...p: unknown[]) {
-          return (stmt as { bind?: (...p: unknown[]) => unknown }).bind?.(...p) ?? stmt;
+        run(...params: unknown[]) {
+          if (params.length === 0) return stmt.run();
+          return stmt.bind(...params).run();
         },
-        async get(...p: unknown[]) {
-          const b = p.length ? this.bind(...p) : stmt;
-          return (b as { first?: () => Promise<unknown>; get?: () => Promise<unknown> }).first?.() ??
-            (b as { get?: () => Promise<unknown> }).get?.();
+        async get(...params: unknown[]) {
+          const row =
+            params.length === 0
+              ? await stmt.first()
+              : await stmt.bind(...params).first();
+          return (row ?? undefined) as Record<string, unknown> | undefined;
         },
-        async run(...p: unknown[]) {
-          const b = p.length ? this.bind(...p) : stmt;
-          return (b as { run?: () => Promise<unknown> }).run?.() ?? Promise.resolve(b);
-        },
-        async all(...p: unknown[]) {
-          const b = p.length ? this.bind(...p) : stmt;
-          if ((b as { all?: unknown }).all) {
-            const r = await (b as { all: () => Promise<unknown> }).all();
-            return (r as { results?: unknown[] })?.results ?? (r as unknown[]);
-          }
-          return [];
+        async all(...params: unknown[]) {
+          const result =
+            params.length === 0
+              ? await stmt.all()
+              : await stmt.bind(...params).all();
+          return (result?.results ?? []) as Record<string, unknown>[];
         },
       };
     },
-  } as DbLike;
+  };
 }
 
-export function GestaoBot({ id }: AgentProps) {
+type AgentSecrets = {
+  LLM_KEY_ENCRYPTION_SECRET?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+};
+
+export function GestaoBot(_props: AgentProps) {
   const delivery = useDelivery();
-  const a = (delivery.attributes ?? {}) as Record<string, unknown>;
+  const a = (
+    delivery.kind === 'signal' ? (delivery.attributes ?? {}) : {}
+  ) as Record<string, unknown>;
+
+  const secrets = env as unknown as AgentSecrets;
 
   const empresaId = String(a.empresaId ?? '');
   const expertId = a.expertId != null ? String(a.expertId) : null;
@@ -102,7 +101,7 @@ export function GestaoBot({ id }: AgentProps) {
     const loaded = await loadEmpresaLlmForBot(
       db,
       empresaId,
-      String(env.LLM_KEY_ENCRYPTION_SECRET ?? ''),
+      String(secrets.LLM_KEY_ENCRYPTION_SECRET ?? ''),
     );
     return loaded.ok ? loaded.apiKey : '';
   };
@@ -119,7 +118,7 @@ export function GestaoBot({ id }: AgentProps) {
 
   useModel(`${derivedId}/${nativeModelId}`);
 
-  const token = String(env.TELEGRAM_BOT_TOKEN ?? '').trim();
+  const token = String(secrets.TELEGRAM_BOT_TOKEN ?? '').trim();
   const closure: GestaoBotToolsClosure = {
     empresa_id: empresaId,
     expert_id: expertId,
