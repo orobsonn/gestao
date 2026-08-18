@@ -11,6 +11,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+### Fixed
+
+### Removed
+
+## [0.13.0] - 2026-08-18
+
+> ⚠️ **Antes de publicar o Worker desta versão, rode `npm run db:migrate`** (migrations `0010` e
+> `0011`). A `0010` cria a tabela que impede a mesma resposta ser postada duas vezes no chat — sem
+> ela o primeiro turno já falha. A `0011` remove a tabela de transporte de turno, que o Worker
+> antigo ainda lê: há uma janela curta, aceita, em que a versão anterior fica sem ela.
+>
+> O deploy sancionado é **`npm run deploy`** — ele reconstrói o artefato a partir do HEAD antes de
+> publicar. `wrangler deploy` cru pula esse passo e pode publicar um `dist/` antigo **junto com a
+> migration destrutiva**.
+
+
+### Added
+
+### Changed
+
 - Motor do bot de Telegram migrado do Flue 1.0.0-beta.9 (beta) para o Flue 2.0.3 — mesmo
   comportamento do ponto de vista do usuário, runtime novo por baixo
 - Deploy do Worker passa a ser só `npm run deploy` (`wrangler deploy` com build automático antes);
