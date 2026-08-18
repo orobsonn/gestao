@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [0.12.0] - 2026-08-18
+
 > ⚠️ **Antes de publicar o Worker desta versão, rode `npm run db:migrate`** (migrations `0008` e
 > `0009`). O deploy não aplica migração, e o Worker novo já lê e grava `model_id` — publicar antes
 > de migrar derruba **todo turno de toda empresa em silêncio**: o erro é engolido pelo webhook e o
@@ -38,8 +48,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   simplesmente voltar para "Padrão do provedor" sem explicação — e "Padrão do provedor" fica
   salvável nesse estado, senão o aviso mandaria agir com a ação mais barata bloqueada
 - Trocar de empresa não carrega mais o provedor e o modelo da empresa anterior para a tela da nova
+- Um adapter de banco com retorno inesperado apagava o vínculo de empresa ativa do usuário na DM e
+  respondia "nenhuma empresa" — agora falha em vez de tratar erro como "usuário sem empresa"
 
 ### Removed
+
+### Infra
+
+- CI (typecheck + testes) em toda PR e push na `main` — o repo não tinha nenhuma
+- `tsc -b` volta a passar: 68 erros de tipo pré-existentes zerados, e o `.flue/` (worker e Durable
+  Object de produção) passa a ser typechecado
+- `npm ci` volta a funcionar: o `package-lock.json` estava dessincronizado
 
 ## [0.11.0] - 2026-08-08
 
