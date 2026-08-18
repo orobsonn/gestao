@@ -217,7 +217,7 @@ export async function handleBotTurn({
       return { reply: FAIL_LLM }
     }
 
-    const sessionId = buildSessionId({ kind: 'dm', userId })
+    const sessionId = buildSessionId({ kind: 'dm', empresaId, userId })
 
     let dmBoundaryLine = null
     if (pendingBoundary === 1) {

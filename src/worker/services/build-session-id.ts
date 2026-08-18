@@ -1,18 +1,24 @@
-/** @description Build stable session id for topic or dm surfaces. topic:chat:thread or dm:userId. String canonical, no spaces. */
+/** @description Build stable session id for topic or dm surfaces. tp2:chat:thread or dm2:empresa:user. String canonical, no spaces. */
 
 /** Telegram ids arrive as numbers from the wire and as strings from storage; both canonicalize. */
 type TelegramId = string | number
 
 export type SessionIdInput =
   | { kind: 'topic'; chatId: TelegramId; threadId: TelegramId; userId?: TelegramId }
-  | { kind: 'dm'; userId: TelegramId; chatId?: TelegramId; threadId?: TelegramId }
+  | { kind: 'dm'; empresaId: string; userId: TelegramId; chatId?: TelegramId; threadId?: TelegramId }
 
 export function buildSessionId(input: SessionIdInput): string {
   if (input.kind === 'topic') {
-    return `topic:${String(input.chatId)}:${String(input.threadId)}`
+    return `tp2:${String(input.chatId)}:${String(input.threadId)}`
   }
   if (input.kind === 'dm') {
-    return `dm:${String(input.userId)}`
+    // An unscoped DM id lets one company's message ride another company's live agent response
+    // (useModel is submission-scoped, tools/instructions are per-render). It must be impossible
+    // to construct, not merely discouraged — undefined, null and '' all throw.
+    if (!input.empresaId) {
+      throw new Error('dm session id requires an empresaId')
+    }
+    return `dm2:${String(input.empresaId)}:${String(input.userId)}`
   }
   // Unreachable for typed callers, but this module is also imported from .mjs tests and from the
   // webhook path, where `kind` arrives as untyped data. Keep the runtime guard.
