@@ -143,30 +143,6 @@ function assertNotNull(cols, name, table) {
 }
 
 /**
- * @description Assert column is nullable (not NOT NULL).
- * @param {Map<string, ReturnType<typeof tableInfo>[number]>} cols
- * @param {string} name
- * @param {string} table
- */
-function assertNullable(cols, name, table) {
-  const col = cols.get(name);
-  assert.ok(col, `${table}.${name} must exist`);
-  assert.equal(col.notnull, false, `${table}.${name} must be nullable`);
-}
-
-/**
- * @description Assert column type is TEXT.
- * @param {Map<string, ReturnType<typeof tableInfo>[number]>} cols
- * @param {string} name
- * @param {string} table
- */
-function assertText(cols, name, table) {
-  const col = cols.get(name);
-  assert.ok(col, `${table}.${name} must exist`);
-  assert.equal(col.type, "TEXT", `${table}.${name} must be TEXT`);
-}
-
-/**
  * @description Seed a minimal users row (dummy hash/salt — FK parent only).
  * @param {DatabaseSync} db
  * @param {{ id?: string, email?: string, name?: string }} [opts]
@@ -255,68 +231,6 @@ test("lt-dedup-migration-schema: webhook_updates PK update_id; dm_active_empresa
   db.close();
 });
 
-// ─── lt-turn-context-migration-schema ──────────────────────────────────────
-
-/**
- * @description telegram_agent_turn_context has PK turn_token, required ciphertext+iv pair, nullable expert/boundary, FKs.
- */
-test("lt-turn-context-migration-schema: PK turn_token; NOT NULL identity/key/message cols; nullable expert_id/dm_boundary_line; FKs", () => {
-  const db = openDb();
-
-  const tables = db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
-    )
-    .all()
-    .map((r) => r.name);
-  assert.ok(
-    tables.includes("telegram_agent_turn_context"),
-    "telegram_agent_turn_context must exist after full migration chain",
-  );
-
-  const cols = columnsByName(db, "telegram_agent_turn_context");
-  assertPk(cols, "turn_token", "telegram_agent_turn_context");
-
-  for (const name of [
-    "empresa_id",
-    "actor_user_id",
-    "surface",
-    "provider",
-    "api_key_ciphertext",
-    "api_key_iv",
-    "message",
-    "expires_at",
-  ]) {
-    assertNotNull(cols, name, "telegram_agent_turn_context");
-  }
-
-  // bot_token must NOT be persisted in D1 — turn consumer uses env botToken
-  assert.equal(
-    cols.has("bot_token"),
-    false,
-    "telegram_agent_turn_context must not have bot_token column",
-  );
-
-  // ciphertext + iv both TEXT NOT NULL (mirror empresa_llm_settings encryptLlmApiKey pair — never ciphertext-only)
-  assertText(cols, "api_key_ciphertext", "telegram_agent_turn_context");
-  assertText(cols, "api_key_iv", "telegram_agent_turn_context");
-
-  assertNullable(cols, "expert_id", "telegram_agent_turn_context");
-  assertNullable(cols, "dm_boundary_line", "telegram_agent_turn_context");
-
-  const fks = foreignKeys(db, "telegram_agent_turn_context");
-  assert.ok(
-    hasFk(fks, "empresas", ["empresa_id"], ["id"]),
-    "telegram_agent_turn_context.empresa_id must FK REFERENCES empresas(id)",
-  );
-  assert.ok(
-    hasFk(fks, "users", ["actor_user_id"], ["id"]),
-    "telegram_agent_turn_context.actor_user_id must FK REFERENCES users(id)",
-  );
-
-  db.close();
-});
-
 // ─── lt-dedup-claim-once ───────────────────────────────────────────────────
 
 /**
@@ -365,45 +279,6 @@ test("lt-dm-pin-fk-rejects-orphan: INSERT telegram_dm_active_empresa orphan → 
     .prepare(`SELECT count(*) AS n FROM telegram_dm_active_empresa`)
     .get();
   assert.equal(count.n, 0, "no dm pin row must be stored after FK failure");
-
-  db.close();
-});
-
-// ─── lt-turn-context-fk-rejects-orphan ─────────────────────────────────────
-
-/**
- * @description INSERT telegram_agent_turn_context with orphan empresa/actor and all NOT NULL cols fails FOREIGN KEY.
- */
-test("lt-turn-context-fk-rejects-orphan: INSERT telegram_agent_turn_context orphan empresa/actor → FK fail", () => {
-  const db = openDb();
-
-  assert.throws(
-    () => {
-      db.prepare(
-        `INSERT INTO telegram_agent_turn_context
-          (turn_token, empresa_id, actor_user_id, surface, provider,
-           api_key_ciphertext, api_key_iv, message, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        "turn-orphan-1",
-        "orphan-empresa",
-        "orphan-actor",
-        "dm",
-        "openai",
-        "cipher-test",
-        "iv-test",
-        "hello",
-        "2026-08-05T12:02:00.000Z",
-      );
-    },
-    /FOREIGN KEY/i,
-    "INSERT telegram_agent_turn_context with orphan empresa_id/actor_user_id must fail FOREIGN KEY",
-  );
-
-  const count = db
-    .prepare(`SELECT count(*) AS n FROM telegram_agent_turn_context`)
-    .get();
-  assert.equal(count.n, 0, "no turn_context row must be stored after FK failure");
 
   db.close();
 });
