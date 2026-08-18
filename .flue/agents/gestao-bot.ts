@@ -5,6 +5,8 @@ import { createGestaoBotTools, type GestaoBotToolsClosure } from '../../src/work
 import { bindTurnTokenToAgent, consumeAgentBoundTurn, consumeTurnContext } from '../../src/worker/agent/turn-context-store.ts'
 import { enableForeignKeysAsync } from '../../src/worker/db.ts'
 import { buildAgentIdentityPrompt } from '../../src/worker/agent/run-agent-turn.ts'
+import { resolveEmpresaLlmTurnModel } from '../../src/worker/services/llm-turn-model.ts'
+import { getModel } from '@earendil-works/pi-ai/compat'
 const playbook = `**Playbook gestao-bot (pt-br) — respostas no Telegram**
 
 ## Formato (obrigatório)
@@ -104,9 +106,50 @@ function withTerminalStop(tools: any[]) {
   }))
 }
 
+/** @description Legacy per-provider default. Single source of truth is DEFAULT_TURN_MODELS. */
 function modelForProvider(p: string): string {
-  if (p === 'anthropic') return 'anthropic/claude-sonnet-4-6'
-  return 'openai/gpt-4o-mini'
+  return resolveEmpresaLlmTurnModel(p === 'anthropic' ? 'anthropic' : 'openai', null)
+}
+
+/** @description Hex so the derivation is injective and can never contain a `/`. */
+function hexEncode(value: string): string {
+  return Array.from(new TextEncoder().encode(value))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+/**
+ * @description Provider id scoped to the EMPRESA, so a tenant's key is never shared in the registry.
+ *
+ * Flue's provider registry is MODULE-SCOPED and last-write-wins, and the key is resolved lazily on
+ * every model call. Under the canonical `openai`/`anthropic` ids a sibling Durable Object in the
+ * same isolate overwrites the entry mid-turn and the in-flight turn starts billing ANOTHER
+ * empresa's account.
+ *
+ * The scope must be the empresa, NOT the agent: a DM's agent id is `dm:<userId>`, which is agnostic
+ * of empresa, so a user who belongs to two empresas would collapse both credentials onto one slot.
+ * The native model is part of the key too, so each slot carries the metadata of the model it serves.
+ *
+ * Known residual: Flue exposes no unregister, so the map retains one decrypted key per distinct
+ * (empresa, model) pair seen by the isolate, for the isolate's lifetime.
+ */
+function turnProviderId(provider: string, empresaId: string, nativeModel: string): string {
+  return `${provider}--${hexEncode(empresaId)}--${hexEncode(nativeModel)}`
+}
+
+/**
+ * @description Model for this turn: the one resolved when the turn was admitted.
+ *
+ * A row minted by a previous Worker version carries no model; fall back to the per-provider
+ * default and say so, since Flue replaces a thrown initializer error with a generic message and a
+ * silent fallback would be invisible.
+ */
+function turnModelOrDefault(modelId: unknown, provider: string): string {
+  if (typeof modelId === 'string' && modelId.trim().length > 0) return modelId
+  console.warn(
+    JSON.stringify({ op: 'gestaoBotTurnModel', level: 'warn', provider, reason: 'model_id_missing' }),
+  )
+  return modelForProvider(provider)
 }
 
 /**
@@ -184,11 +227,24 @@ export default defineAgent(async ({ id, env }) => {
   const db = asDbLike((env as any).DB)
   const secret = (env as any).LLM_KEY_ENCRYPTION_SECRET as string | undefined
   if (!secret) {
+    // The most likely degradations must not be silent — Flue replaces a thrown initializer error
+    // with a generic message, so without a log the operator has nothing to go on.
+    console.warn(
+      JSON.stringify({
+        op: 'gestaoBotTurnInit',
+        level: 'warn',
+        agentId: id,
+        reason: 'no_encryption_secret',
+      }),
+    )
     return baseAgentConfig(modelForProvider('openai'))
   }
   // Flue may initialize defineAgent twice in one submission (Worker route + DO).
   // Turn row is single-use: first init consumes; second must reuse DO-local cache
   // or we register no API key → "No API key for provider: openai".
+  for (const [key, entry] of turnCache) {
+    if (entry.expiresAtMs <= Date.now()) turnCache.delete(key)
+  }
   const cacheKey = id
   let ctx: any = null
   const consumed = await consumeAgentBoundTurn(db, id, secret)
@@ -201,11 +257,57 @@ export default defineAgent(async ({ id, env }) => {
       ctx = hit.ctx
     } else {
       turnCache.delete(cacheKey)
+      console.warn(
+        JSON.stringify({
+          op: 'gestaoBotTurnInit',
+          level: 'warn',
+          agentId: id,
+          reason: 'no_turn_context',
+        }),
+      )
       return baseAgentConfig(modelForProvider('openai'))
     }
   }
   await enableForeignKeysAsync(db)
-  if (ctx.provider && ctx.apiKey) registerProvider(ctx.provider, { apiKey: ctx.apiKey })
+  const turnModel = turnModelOrDefault(ctx.model_id, ctx.provider)
+  let nativeModel = turnModel.slice(turnModel.indexOf('/') + 1)
+  const lookupModel = (native: string) => {
+    try {
+      return getModel(ctx.provider, native)
+    } catch {
+      return null
+    }
+  }
+  // A per-agent provider id is unknown to Flue's catalog, so the canonical metadata must be
+  // carried across or the request goes out with max_tokens: 0 and every turn fails silently.
+  let canonical = lookupModel(nativeModel)
+  if (!canonical) {
+    console.warn(
+      JSON.stringify({
+        op: 'gestaoBotTurnModel',
+        level: 'warn',
+        provider: ctx.provider,
+        reason: 'model_unresolved_in_registry',
+      }),
+    )
+    const fallback = modelForProvider(ctx.provider)
+    nativeModel = fallback.slice(fallback.indexOf('/') + 1)
+    canonical = lookupModel(nativeModel)
+  }
+  const providerId = turnProviderId(ctx.provider, ctx.empresa_id, nativeModel)
+  if (ctx.provider && ctx.apiKey && canonical) {
+    registerProvider(providerId, {
+      api: canonical.api,
+      baseUrl: canonical.baseUrl,
+      apiKey: ctx.apiKey,
+      contextWindow: canonical.contextWindow,
+      maxTokens: canonical.maxTokens,
+      // Normalizes the telemetry NAME only. The event's `providerId` still carries the derived
+      // id, so the hex empresa id still reaches the observability sink — this is aggregation,
+      // not containment.
+      telemetry: { providerName: ctx.provider },
+    } as any)
+  }
   const token = String((env as any).TELEGRAM_BOT_TOKEN ?? '').trim()
   const closure: GestaoBotToolsClosure = {
     empresa_id: ctx.empresa_id,
@@ -233,7 +335,7 @@ export default defineAgent(async ({ id, env }) => {
   const boundary = ctx.dm_boundary_line ? `\n${ctx.dm_boundary_line}` : ''
   const instructions = playbook + '\n' + identity + boundary
   return {
-    model: modelForProvider(ctx.provider),
+    model: canonical ? `${providerId}/${nativeModel}` : modelForProvider(ctx.provider),
     cwd: AGENT_CWD,
     instructions,
     tools,

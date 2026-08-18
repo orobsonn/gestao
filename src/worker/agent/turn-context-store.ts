@@ -9,6 +9,9 @@ export interface InsertTurnContextInput {
   actorUserId: string
   surface: 'topic' | 'dm'
   provider: string
+  /** Provider-namespaced resolved turn model (for example openai/gpt-5.6-terra); optional for
+   *  rows minted by an older Worker mid-deploy. */
+  modelId?: string | null
   apiKey: string
   message: string
   encryptionSecret: string
@@ -23,6 +26,7 @@ export interface TurnContextRow {
   actor_user_id: string
   surface: 'topic' | 'dm'
   provider: string
+  model_id: string | null
   apiKey: string
   message: string
   dm_boundary_line?: string | null
@@ -47,8 +51,8 @@ export async function insertTurnContext(
 
   const sql = `INSERT INTO telegram_agent_turn_context (
     turn_token, empresa_id, expert_id, actor_user_id, surface,
-    provider, api_key_ciphertext, api_key_iv, dm_boundary_line, message, expires_at, created_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${expiresAt}, datetime('now'))`
+    provider, model_id, api_key_ciphertext, api_key_iv, dm_boundary_line, message, expires_at, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${expiresAt}, datetime('now'))`
 
   const params = [
     turnToken,
@@ -57,6 +61,7 @@ export async function insertTurnContext(
     input.actorUserId,
     input.surface,
     input.provider,
+    input.modelId ?? null,
     ciphertextHex,
     ivHex,
     input.dmBoundaryLine ?? null,
@@ -101,6 +106,7 @@ export async function consumeTurnContext(
       actor_user_id: row.actor_user_id,
       surface: row.surface,
       provider: row.provider,
+      model_id: typeof row.model_id === 'string' ? row.model_id : null,
       apiKey,
       message: row.message,
       dm_boundary_line: row.dm_boundary_line ?? undefined,

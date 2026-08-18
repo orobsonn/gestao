@@ -21,6 +21,67 @@ Cloudflare Worker API (Hono) for auth, bootstrap, and platform provision.
 - **Hermetic tests:** export `createAuthApp(db)` / `createPlatformApp(db)` / `createEmpresaApp(db)` factories; node:sqlite + full migration chain (`migrations/*.sql` sorted lexically, `PRAGMA foreign_keys=ON`).
 - **Telegram unlink:** `DELETE /api/auth/telegram-link` behind `requireSession`; batch hard-DELETE `user_telegram_links` + burn unused `telegram_link_codes` for session `user.id` only; always **204** empty body; never return `telegram_user_id`.
 
+## LLM settings (`empresa_llm_settings`)
+
+- **Two model formats, deliberately opposite:** `empresa_llm_settings.model_id` is **provider-native**
+  (`gpt-4o-mini`); `telegram_agent_turn_context.model_id` is **provider-namespaced**
+  (`openai/gpt-4o-mini`). `resolveEmpresaLlmTurnModel` is the only bridge. There is NO format guard
+  on the write — `insertTurnContext` stores what the orchestrator passes, so the caller owns the
+  contract.
+- **Curated catalog is a second source of truth — pin it.** Every id in `llm-model-catalog.ts` must
+  resolve in the bundled `@earendil-works/pi-ai` registry with a non-zero token budget. An id that
+  is a real provider model but unknown to the registry resolves to zero metadata, so the request
+  goes out with `max_tokens: 0` and every turn fails while the dashboard still says "saved" and
+  "valid". Pinned by `lt-catalog-models-resolve-in-runtime`.
+- **Each provider's locked default must be a catalog member**, or a legacy empresa cannot select
+  the model it is running on and clearing becomes a one-way door.
+- **PUT body is a `.strict()` exclusive union**: either `{provider, api_key}` or
+  `{model_id: string | null}`. `null` clears back to the default; the empty string is rejected —
+  persisting it would make the gate unable to resolve and the empresa's bot go silent.
+- **The model CAS predicate carries provider AND key identity AND the prior model**
+  (`WHERE empresa_id = ? AND provider = ? AND api_key_ciphertext IS ? AND <normalized model_id> IS ?`),
+  with `RETURNING` and **no retry**. Provider alone is not enough: rotating the key of the same
+  provider deliberately resets `model_id`, and a PUT in flight would otherwise re-attach a model to
+  the fresh credential. Normalize the stored value **in SQL** to match what `loadSettingsRow`
+  returned — comparing a trimmed value against a raw column makes a padded row unsaveable forever.
+- A credential PUT always resets `model_id` to NULL and `status` to `unvalidated`; the dashboard
+  must re-read the model from the response rather than keep its own pick.
+- **Never register a tenant credential under the canonical provider id, and scope the slot by
+  EMPRESA.** Flue's provider registry is module-scoped and last-write-wins, and the key is resolved
+  lazily on every model call — so any shared id lets another turn swap an in-flight turn onto a
+  different empresa's account. `.flue/agents/gestao-bot.ts` registers under
+  `<provider>--<hex empresa id>--<hex native model>`. Scoping by AGENT is NOT enough: a DM's agent
+  id is `dm:<userId>`, agnostic of empresa, so a user who belongs to two empresas would collapse
+  both credentials onto one slot. Pinned by `lt-turn-provider-isolated-per-empresa`.
+- **A provider id outside Flue's catalog resolves to ZERO metadata**, so the registration must
+  carry `api`/`baseUrl`/`maxTokens`/`contextWindow` from the canonical entry or the request goes
+  out with `max_tokens: 0`. Note what an `HttpProviderRegistration` canNOT carry: `cost`,
+  `reasoning`, `input` and `compat` are zeroed by construction under any non-catalog id. Per-turn
+  cost telemetry therefore reads zero, and a reasoning model is treated as non-reasoning.
+  Because `reasoning` is zeroed, the `thinkingLevelMap` branch in the wire builders is
+  UNREACHABLE — the live loss is **`compat`**. Concretely: `claude-sonnet-4-6`,
+  `claude-sonnet-5` and `claude-opus-4-8` carry `compat.forceAdaptiveThinking`, whose absence
+  means every anthropic turn currently ships the `anthropic-beta: interleaved-thinking-2025-05-14`
+  header that pi-ai suppresses on purpose for those models; and `claude-opus-4-8` carries
+  `compat.supportsTemperature: false`, latent until someone sets a temperature.
+  **OPERATOR DECISION, NOT TAKEN HERE:** a "no curated id may carry compat" guard would evict
+  `claude-sonnet-4-6`, which is the locked anthropic default. Choosing between moving that default
+  (only `claude-haiku-4-5` has no compat) and accepting the loss is the operator's call.
+  Pass `telemetry.providerName` so observability aggregates by `openai`/`anthropic` — note the
+  event's `providerId` still carries the derived id, so this is aggregation, not containment.
+- **There is NO per-turn output-token ceiling.** The registration passes the canonical
+  `maxTokens` straight through, so switching `gpt-4o-mini` (16384) to `gpt-5.6-sol` (128000) in the
+  dashboard multiplies the ceiling ~8x and the input price ~33x with one dropdown and no redeploy —
+  and because `cost` is zeroed, per-turn telemetry reads zero, so the change is invisible. A
+  ceiling is an operator decision and is not specified; do not invent a value.
+- **Residual, tracked in #79:** the DO-local `turnCache` in `.flue/agents/gestao-bot.ts` is keyed by
+  AGENT id, not empresa. A multi-empresa DM user (`dm:<userId>`) can still be served the previous
+  turn's context from it when the turn row is gone. The per-empresa provider slot bounds the
+  credential, not that cache — do not read the empresa scoping above as covering it.
+- **The registry has no unregister:** it accumulates one decrypted key per (empresa, provider,
+  model) for the lifetime of an isolate, and the Worker isolate is shared across all tenants.
+  Growth is O(empresas served).
+
 ## Domain CRUD (experts / campanhas / tarefas)
 
 - **Compose into `createEmpresaApp`:** each domain module exports `registerXRoutes(app, db)` and is wired inside `createEmpresaApp` — single `/api/empresa/*` surface; do not add parallel dispatch in `index.ts`.

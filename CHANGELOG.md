@@ -7,11 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> ⚠️ **Antes de publicar o Worker desta versão, rode `npm run db:migrate`** (migrations `0008` e
+> `0009`). O deploy não aplica migração, e o Worker novo já lê e grava `model_id` — publicar antes
+> de migrar derruba **todo turno de toda empresa em silêncio**: o erro é engolido pelo webhook e o
+> `update_id` já foi deduplicado, então o Telegram não reenvia e as mensagens são perdidas.
+
 ### Added
+
+- Escolha do modelo de LLM por empresa no dashboard (aba IA): catálogo curado por provedor, opção
+  de voltar ao padrão do provedor, e efeito já na próxima mensagem do bot — sem redeploy
+- Migrations `0008` (modelo escolhido na empresa) e `0009` (modelo resolvido no contexto do turno)
 
 ### Changed
 
+- Salvar uma chave de API nova volta o modelo para o padrão do provedor e exige nova validação
+- Gravar o modelo agora falha com conflito se a chave da empresa, o provedor ou o modelo mudaram no
+  meio da edição, em vez de sobrescrever a alteração de outra pessoa
+
 ### Fixed
+
+- Duas empresas no mesmo provedor podiam trocar de chave de API entre si: a credencial ficava num
+  registro compartilhado, lido a cada chamada, então um turno em andamento passava a usar a conta
+  de outra empresa se um segundo turno começasse no meio. Cada turno agora registra a credencial
+  sob um identificador próprio
+- Um modelo que sai do catálogo (descontinuado pelo fornecedor) deixava o bot da empresa mudo em
+  todo turno; agora volta ao padrão do provedor
+- Modelo salvo com espaço em branco tinha o mesmo efeito; agora também cai no padrão
+- Quando um modelo escolhido sai do catálogo, o dashboard passa a dizer qual era, em vez de
+  simplesmente voltar para "Padrão do provedor" sem explicação
+- Trocar de empresa não carrega mais o provedor e o modelo da empresa anterior para a tela da nova
 
 ### Removed
 

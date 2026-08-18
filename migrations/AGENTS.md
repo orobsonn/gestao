@@ -24,6 +24,8 @@ D1 SQL migrations for the gestao multi-tenant schema.
 | `0005_telegram_dm_link.sql` | Forward: `telegram_link_codes` (user-scoped one-shot codes, UNIQUE `code_hash`, FK `users` CASCADE, partial unique index one-unused-per-user on `user_id` WHERE `used_at IS NULL`) + `user_telegram_links` (PK `user_id`, UNIQUE `telegram_user_id`, FK `users` CASCADE). No `empresa_id` — link is global per user. |
 | `0006_telegram_grupo_topico.sql` | Forward: `telegram_bind_codes` (empresa-scoped, kind empresa|expert + CHECK + split partial uniques on empresa_id/expert_id WHERE unused), `empresa_telegram_chats` (PK empresa_id, UNIQUE chat_id, composite UNIQUE for FK target), `expert_telegram_topics` (PK expert_id, UNIQUE(chat_id,message_thread_id), composite FKs to experts + mandatory FK to empresa_telegram_chats). |
 | `0007_telegram_agent_support.sql` | Forward: `telegram_webhook_updates` (update_id PK for dedup), `telegram_dm_active_empresa` (user_id PK, empresa_id FK, pending_boundary 0|1), `telegram_agent_turn_context` (turn_token PK, ciphertext+iv NOT NULL, composite nullable expert FK). |
+| `0008_empresa_llm_model.sql` | Forward: nullable provider-native `model_id` on `empresa_llm_settings`; legacy settings remain null. |
+| `0009_telegram_turn_model.sql` | Forward: nullable **provider-namespaced** `model_id` on `telegram_agent_turn_context` (e.g. `openai/gpt-4o-mini`) — note this is the OPPOSITE format from `0008`, which stores the provider-native id. Legacy contexts remain compatible. |
 
 ### Hermetic openDb rule (tests + local)
 
