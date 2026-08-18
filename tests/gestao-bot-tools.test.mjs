@@ -1414,6 +1414,12 @@ test("lt-tools-batch-latch-after-empresa-switch: switch blocks sibling writes in
   );
 
   // Parallel batch: promises start in the same tick; the write must abort.
+  // Seed a THIRD empresa so the parallel switch takes the MUTATING path — the
+  // reverse block already pinned emp-B, so switching to emp-B again would hit
+  // the no-op branch and never arm the latch.
+  const empC = "emp-C";
+  seedEmpresa(db, { id: empC, nome: "Empresa C" });
+  seedMembro(db, empC, actorId);
   const batchTools = buildTools(db, {
     empresa_id: empA,
     expert_id: null,
@@ -1421,7 +1427,7 @@ test("lt-tools-batch-latch-after-empresa-switch: switch blocks sibling writes in
     surface: "dm",
   });
   const pSwitch = getTool(batchTools, "definir_empresa_ativa").run({
-    data: { empresa_id: empB },
+    data: { empresa_id: empC },
   });
   const pCreate = getTool(batchTools, "criar_tarefa").run({
     data: { titulo: "batch paralelo", campanha_id: campA.id },
@@ -1445,6 +1451,16 @@ test("lt-tools-batch-latch-after-empresa-switch: switch blocks sibling writes in
     getTarefaByTitulo(db, "batch paralelo"),
     undefined,
     "no tarefa row must exist for parallel batch",
+  );
+  const parallelPin = db
+    .prepare(
+      `SELECT empresa_id FROM telegram_dm_active_empresa WHERE user_id = ?`,
+    )
+    .get(actorId);
+  assert.equal(
+    /** @type {{ empresa_id?: string }} */ (parallelPin)?.empresa_id,
+    empC,
+    "parallel switch must take the mutating path and pin the third empresa",
   );
 
   db.close();

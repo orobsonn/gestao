@@ -192,7 +192,7 @@ export function createGestaoBotTools(
         const sql = `SELECT id, campanha_id, titulo, status, dono_id, created_by, deleted_at
           FROM tarefas
           WHERE empresa_id = ? AND deleted_at IS NULL
-          ORDER BY created_at DESC LIMIT 50`
+          ORDER BY created_at DESC, rowid DESC LIMIT 50`
         const rows = (await Promise.resolve(
           db.prepare(sql).all(closureEmpresaId),
         )) as Array<Record<string, unknown>>
@@ -248,7 +248,10 @@ export function createGestaoBotTools(
           }
         }
         const telegram_preview = lines.join('\n').trim()
-        return { output: { tarefas: enriched, telegram_preview, total: enriched.length } }
+        return {
+          output: { tarefas: enriched, telegram_preview, total: enriched.length },
+          ...(activeEmpresaSwitched ? { terminate: true } : {}),
+        }
       },
     }),
   )
@@ -550,9 +553,10 @@ export function createGestaoBotTools(
       const sql = `SELECT m.user_id, u.name, m.papel
         FROM empresa_membros m
         JOIN users u ON u.id = m.user_id
-        WHERE m.empresa_id = ?`
+        WHERE m.empresa_id = ?
+        ORDER BY u.name COLLATE NOCASE, m.user_id LIMIT 50`
       const rows = await Promise.resolve(db.prepare(sql).all(closureEmpresaId))
-      return { output: { membros: rows ?? [] } }
+      return { output: { membros: rows ?? [] }, ...(activeEmpresaSwitched ? { terminate: true } : {}) }
     },
     }),
   )
@@ -590,11 +594,12 @@ export function createGestaoBotTools(
           FROM empresa_membros m
           JOIN empresas e ON e.id = m.empresa_id
           WHERE m.user_id = ? AND e.deleted_at IS NULL
-          ORDER BY e.nome COLLATE NOCASE, e.id`
+          ORDER BY e.nome COLLATE NOCASE, e.id
+          LIMIT 50`
         const rows = await Promise.resolve(
           db.prepare(sql).all(closureActorId),
         )
-        return { output: { empresas: rows ?? [] } }
+        return { output: { empresas: rows ?? [] }, ...(activeEmpresaSwitched ? { terminate: true } : {}) }
       },
       }),
     )
@@ -608,47 +613,56 @@ export function createGestaoBotTools(
           empresaId: v.optional(v.string()),
         }),
         run: async ({ data }) => {
+        const targetEmpresaId = String(data.empresa_id ?? data.empresaId ?? '')
+        if (targetEmpresaId && targetEmpresaId === closureEmpresaId) {
+          await ensureFk()
+          return { output: { empresa_id: targetEmpresaId }, terminate: true }
+        }
         if (empresaSwitchInFlight || activeEmpresaSwitched) {
           return { output: { ok: false, error: 'Já houve uma troca de empresa neste turno. Refaça o pedido.' }, terminate: true }
         }
         empresaSwitchInFlight = true
-        await ensureFk()
-        const targetEmpresaId = String(
-          data.empresa_id ?? data.empresaId ?? '',
-        )
-        if (!targetEmpresaId) {
-          empresaSwitchInFlight = false
-          return { output: { ok: false, error: 'empresa_id obrigatório' } }
-        }
-        const same = await isSameEmpresaMember(
-          db,
-          targetEmpresaId,
-          closureActorId,
-        )
-        if (!same) {
-          empresaSwitchInFlight = false
-          return { output: { ok: false, error: 'Empresa não encontrada' } }
-        }
-        const current = await Promise.resolve(
-          db.prepare(`SELECT empresa_id FROM telegram_dm_active_empresa WHERE user_id = ?`).get(closureActorId),
-        )
-        if ((current as any)?.empresa_id === targetEmpresaId) {
-          empresaSwitchInFlight = false
+        let switchCommitted = false
+        try {
+          await ensureFk()
+          if (!targetEmpresaId) {
+            empresaSwitchInFlight = false
+            return { output: { ok: false, error: 'empresa_id obrigatório' } }
+          }
+          const same = await isSameEmpresaMember(
+            db,
+            targetEmpresaId,
+            closureActorId,
+          )
+          if (!same) {
+            empresaSwitchInFlight = false
+            return { output: { ok: false, error: 'Empresa não encontrada' } }
+          }
+          const current = await Promise.resolve(
+            db.prepare(`SELECT empresa_id FROM telegram_dm_active_empresa WHERE user_id = ?`).get(closureActorId),
+          )
+          if ((current as any)?.empresa_id === targetEmpresaId) {
+            empresaSwitchInFlight = false
+            return { output: { empresa_id: targetEmpresaId }, terminate: true }
+          }
+          switchCommitted = true
+          await Promise.resolve(
+            db
+              .prepare(
+                `INSERT INTO telegram_dm_active_empresa (user_id, empresa_id, pending_boundary)
+                 VALUES (?, ?, 1)
+                 ON CONFLICT(user_id) DO UPDATE SET
+                   empresa_id = excluded.empresa_id,
+                   pending_boundary = 1`,
+              )
+              .run(closureActorId, targetEmpresaId),
+          )
+          activeEmpresaSwitched = true
           return { output: { empresa_id: targetEmpresaId }, terminate: true }
+        } catch (error) {
+          if (!switchCommitted) empresaSwitchInFlight = false
+          throw error
         }
-        await Promise.resolve(
-          db
-            .prepare(
-              `INSERT INTO telegram_dm_active_empresa (user_id, empresa_id, pending_boundary)
-               VALUES (?, ?, 1)
-               ON CONFLICT(user_id) DO UPDATE SET
-                 empresa_id = excluded.empresa_id,
-                 pending_boundary = 1`,
-            )
-            .run(closureActorId, targetEmpresaId),
-        )
-        activeEmpresaSwitched = true
-        return { output: { empresa_id: targetEmpresaId }, terminate: true }
       },
       }),
     )
