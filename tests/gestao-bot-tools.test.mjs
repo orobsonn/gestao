@@ -1465,3 +1465,67 @@ test("lt-tools-batch-latch-after-empresa-switch: switch blocks sibling writes in
 
   db.close();
 });
+
+// ─── lt-tools-noop-switch-does-not-block-sibling-write ──────────────────────
+
+/**
+ * @description A no-op definir_empresa_ativa (target equals the closure empresa) must NOT
+ * arm the empresaSwitchInFlight latch, so a sibling criar_tarefa started in the same
+ * event-loop turn still writes its row. The no-op short-circuits before the latch is armed.
+ * Remove that short-circuit and the switch arms the latch synchronously (before its first
+ * await), blocking the sibling — so this oracle goes RED against that mutation.
+ */
+test("lt-tools-noop-switch-does-not-block-sibling-write: no-op switch keeps sibling write alive", async () => {
+  const db = openDb();
+  const actorId = "user-actor";
+  const empA = "emp-A";
+  seedEmpresa(db, { id: empA, nome: "Empresa A" });
+  seedUser(db, { id: actorId, name: "Actor" });
+  seedMembro(db, empA, actorId);
+  const expertA = seedExpert(db, { id: "expert-A", empresaId: empA });
+  const campA = seedCampanha(db, {
+    id: "camp-A",
+    empresaId: empA,
+    expertId: expertA.id,
+    status: "aberta",
+  });
+  // Pin the actor's active empresa to A so switching to A is a genuine no-op.
+  await upsertDmActiveEmpresa(db, actorId, empA);
+
+  const tools = buildTools(db, {
+    empresa_id: empA,
+    expert_id: null,
+    actor_user_id: actorId,
+    surface: "dm",
+  });
+
+  // Same event-loop turn, in call order — mirrors the parallel block of
+  // lt-tools-batch-latch-after-empresa-switch. No await between the two runs.
+  const pSwitch = getTool(tools, "definir_empresa_ativa").run({
+    data: { empresa_id: empA },
+  });
+  const pCreate = getTool(tools, "criar_tarefa").run({
+    data: { titulo: "no-op permite escrita", campanha_id: campA.id },
+  });
+  const [, createResult] = await Promise.all([pSwitch, pCreate]);
+
+  const createPayload = payloadOf(createResult);
+  assert.notEqual(
+    /** @type {Record<string, unknown>} */ (createPayload).ok,
+    false,
+    "no-op switch must not block the sibling criar_tarefa (ok must not be false)",
+  );
+  assert.notEqual(
+    /** @type {Record<string, unknown>} */ (createPayload).error,
+    "A empresa ativa mudou neste turno. Refaça o pedido.",
+    "no-op switch must not arm the latch refusal on the sibling create",
+  );
+
+  // Load-bearing: the row must exist under empresa A. With the no-op short-circuit
+  // removed, the sibling is refused and no row is written — this assertion goes RED.
+  const row = getTarefaByTitulo(db, "no-op permite escrita");
+  assert.ok(row, "tarefa with titulo 'no-op permite escrita' must exist");
+  assert.equal(row.empresa_id, empA, "tarefa must carry empresa A");
+
+  db.close();
+});
