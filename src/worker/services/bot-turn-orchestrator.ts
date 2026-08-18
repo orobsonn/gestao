@@ -73,6 +73,34 @@ function getTopicIds(update: TelegramUpdate | null | undefined): { chatId: strin
   }
 }
 
+/**
+ * @description Extract reply text from whatever the injected runAgentTurn resolves — a bare
+ * string (legacy callers/tests) or the `{ text | reply }` object the in-process Flue port
+ * (run-agent-turn.ts) and the frozen webhook-level mocks both produce.
+ */
+function extractAgentReplyText(result: unknown): string {
+  if (typeof result === 'string') return result || 'ok'
+  if (result && typeof result === 'object') {
+    const r = result as { text?: unknown; reply?: unknown }
+    if (typeof r.text === 'string') return r.text
+    if (typeof r.reply === 'string') return r.reply
+  }
+  return 'ok'
+}
+
+/**
+ * @description Extract the RESOLVED dedupe key from whatever runAgentTurn resolves — `null`
+ * when absent (a bare string result, or an object with no key), never `undefined`.
+ */
+function extractAgentReplyKey(result: unknown): string | null {
+  if (result && typeof result === 'object') {
+    const r = result as { key?: unknown; answeredBySubmissionId?: unknown }
+    if (typeof r.key === 'string') return r.key
+    if (typeof r.answeredBySubmissionId === 'string') return r.answeredBySubmissionId
+  }
+  return null
+}
+
 /** @description Fail-closed pt-br replies. */
 const FAIL_UNLINKED =
   'Desculpe, você não está vinculado a esta empresa no Gestão. Use /vincular para conectar sua conta Telegram.'
@@ -135,9 +163,9 @@ export async function handleBotTurn({
   update: any
   botUsername: string
   llmKeyEncryptionSecret: string
-  runAgentTurn: (args: any) => Promise<string>
+  runAgentTurn: (args: any) => Promise<unknown>
   insertTurnContext?: (db: DbLike, input: any) => Promise<{ turn_token: string }>
-}) {
+}): Promise<{ reply: string; answeredBySubmissionId: string | null }> {
   const telegramUserId = getTelegramUserId(update)
   const messageText = getMessageText(update)
 
@@ -146,7 +174,7 @@ export async function handleBotTurn({
   const isDm = isDmSurface(update)
 
   if (!isTopic && !isDm) {
-    return { reply: FAIL_UNLINKED }
+    return { reply: FAIL_UNLINKED, answeredBySubmissionId: null }
   }
 
   if (isDm) {
@@ -158,7 +186,7 @@ export async function handleBotTurn({
         .get(telegramUserId),
     )
     if (!userLink) {
-      return { reply: FAIL_UNLINKED }
+      return { reply: FAIL_UNLINKED, answeredBySubmissionId: null }
     }
     const userId = String(userLink.user_id)
 
@@ -166,7 +194,7 @@ export async function handleBotTurn({
     const empresas = await listEmpresasForUserOrdered(db, userId)
     if (empresas.length === 0) {
       await clearDmActiveEmpresa(db, userId)
-      return { reply: FAIL_N0 }
+      return { reply: FAIL_N0, answeredBySubmissionId: null }
     }
 
     let pin = await getDmActiveEmpresa(db, userId)
@@ -192,7 +220,10 @@ export async function handleBotTurn({
         if (selectorMatch.id !== priorEmpresaId) {
           await setDmPendingBoundary(db, userId, 1)
         }
-        return { reply: `Empresa ${selectorMatch.nome} definida como ativa.` }
+        return {
+          reply: `Empresa ${selectorMatch.nome} definida como ativa.`,
+          answeredBySubmissionId: null,
+        }
       }
       if (empresas.length === 1) {
         // N=1 auto-pin
@@ -204,7 +235,10 @@ export async function handleBotTurn({
         const listText = empresas
           .map((e, i) => `${i + 1}. ${e.nome} (${e.id})`)
           .join('\n')
-        return { reply: `Empresas disponíveis:\n${listText}` }
+        return {
+          reply: `Empresas disponíveis:\n${listText}`,
+          answeredBySubmissionId: null,
+        }
       }
     } else {
       empresaId = pin.empresa_id
@@ -214,7 +248,7 @@ export async function handleBotTurn({
     // now we have empresaId
     const llm = await loadEmpresaLlmForBot(db, empresaId, llmKeyEncryptionSecret)
     if (!llm.ok) {
-      return { reply: FAIL_LLM }
+      return { reply: FAIL_LLM, answeredBySubmissionId: null }
     }
 
     const sessionId = buildSessionId({ kind: 'dm', empresaId, userId })
@@ -241,21 +275,24 @@ export async function handleBotTurn({
     if (pendingBoundary === 1) {
       await setDmPendingBoundary(db, userId, 0)
     }
-    const replyFromAgent = await runAgentTurn({
+    const agentResult = await runAgentTurn({
       sessionId,
       message: messageText,
       turnToken: turn_token,
     })
-    return { reply: typeof replyFromAgent === 'string' ? replyFromAgent : 'ok' }
+    return {
+      reply: extractAgentReplyText(agentResult),
+      answeredBySubmissionId: extractAgentReplyKey(agentResult),
+    }
   } else if (isTopic) {
     const { chatId, threadId } = getTopicIds(update)
     const context = await resolveTelegramTopicContext(db, chatId, threadId)
     if (!context) {
-      return { reply: FAIL_UNLINKED }
+      return { reply: FAIL_UNLINKED, answeredBySubmissionId: null }
     }
     const actor = await resolveTelegramActor(db, telegramUserId, context.empresa_id)
     if (!actor.ok) {
-      return { reply: FAIL_UNLINKED }
+      return { reply: FAIL_UNLINKED, answeredBySubmissionId: null }
     }
     const llm = await loadEmpresaLlmForBot(
       db,
@@ -263,7 +300,7 @@ export async function handleBotTurn({
       llmKeyEncryptionSecret,
     )
     if (!llm.ok) {
-      return { reply: FAIL_LLM }
+      return { reply: FAIL_LLM, answeredBySubmissionId: null }
     }
     const sessionId = buildSessionId({
       kind: 'topic',
@@ -282,13 +319,16 @@ export async function handleBotTurn({
       encryptionSecret: llmKeyEncryptionSecret,
     }
     const { turn_token } = await insertTurnContext(db, turnInput)
-    const replyFromAgent = await runAgentTurn({
+    const agentResult = await runAgentTurn({
       sessionId,
       message: messageText,
       turnToken: turn_token,
     })
-    return { reply: typeof replyFromAgent === 'string' ? replyFromAgent : 'ok' }
+    return {
+      reply: extractAgentReplyText(agentResult),
+      answeredBySubmissionId: extractAgentReplyKey(agentResult),
+    }
   }
 
-  return { reply: FAIL_UNLINKED }
+  return { reply: FAIL_UNLINKED, answeredBySubmissionId: null }
 }

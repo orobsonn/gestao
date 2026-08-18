@@ -1,13 +1,13 @@
 /**
- * Locked runAgentTurn + buildAgentIdentityPrompt contract.
+ * Locked runAgentTurn + buildAgentIdentityPrompt contract (Flue 2.x, in-process port).
  * Hermetic: node:sqlite :memory:, PRAGMA foreign_keys=ON, every migrations/*.sql sorted.
  *
- * Expected production exports (executor creates):
- *   buildAgentIdentityPrompt, runAgentTurn from ../src/worker/agent/run-agent-turn.ts
- *   insertTurnContext from ../src/worker/agent/turn-context-store.ts (for seeding gated row)
+ * Production exports under test:
+ *   buildAgentIdentityPrompt, runAgentTurn, SAFE_REPLY from ../src/worker/agent/run-agent-turn.ts
  *
- * runAgentTurn injectable app.fetch loopback; never throws — SAFE_REPLY pt-br on failure.
- * POST /agents/gestao-bot/<sessionId>?wait=result with body {message} only + secret + turn-token headers.
+ * `?wait=result` does not exist in Flue 2.x — runAgentTurn takes an injected agent-handle PORT
+ * (`dispatch({ message }) -> receipt`, `read(receipt, { signal, onEvent }) -> reply`) and
+ * resolves `{ text, key }`. Never throws — SAFE_REPLY + null key on a rejected read.
  */
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -18,17 +18,11 @@ import { fileURLToPath } from "node:url";
 import {
   buildAgentIdentityPrompt,
   runAgentTurn,
+  SAFE_REPLY,
 } from "../src/worker/agent/run-agent-turn.ts";
-import { insertTurnContext } from "../src/worker/agent/turn-context-store.ts";
-import { encryptLlmApiKey } from "../src/worker/services/llm-key-crypto.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = resolve(__dirname, "../migrations");
-
-const TEST_ENCRYPTION_SECRET = "test-llm-key-encryption-secret-run-agent-turn";
-const AGENT_SECRET = "test-gestao-agent-internal-secret-run-turn";
-const SECRET_HEADER = "x-gestao-agent-internal-secret";
-const TURN_TOKEN_HEADER = "x-gestao-turn-token";
 
 /**
  * @description Open in-memory SQLite, enable FKs, apply every migrations/*.sql sorted by filename.
@@ -198,211 +192,127 @@ test("lt-minimal-identity-no-task-dump: identity fields present; no serialized f
   db.close();
 });
 
-// ─── lt-run-agent-turn-request-body-shape ──────────────────────────────────
+// ─── lt-run-agent-turn-dispatches-message-only ─────────────────────────────
 
 /**
- * @description runAgentTurn POSTs Flue-legal body {message} only with secret + turn-token headers; D1 turn row holds gated fields.
+ * @description runAgentTurn dispatches ONLY { message } to the injected port (no gated identity,
+ * no turnToken/HTTP concept), reads via the receipt, and resolves { text, key } from the port's
+ * settlement — this is the Flue 2.x in-process replacement for the retired ?wait=result hop.
  */
-test("lt-run-agent-turn-request-body-shape: path/headers/body {message} only; D1 holds gated fields", async () => {
-  const db = openDb();
-  const emp = seedEmpresa(db, { id: "emp-body-a", nome: "Empresa Body" });
-  const user = seedUser(db, { id: "user-body-1", name: "Body User" });
-  const expert = seedExpert(db, {
-    id: "expert-body-e",
-    empresaId: emp.id,
-  });
-
-  const plaintextKey = "sk-test-run-agent-turn-body-shape";
+test("lt-run-agent-turn-dispatches-message-only: port.dispatch receives { message } only; text/key resolved from port.read", async () => {
   const sessionId = "topic:-1001:42";
   const message = "criar tarefa de teste";
 
-  const inserted = await insertTurnContext(db, {
-    empresaId: emp.id,
-    expertId: expert.id,
-    actorUserId: user.id,
-    surface: "topic",
-    provider: "openai",
-    apiKey: plaintextKey,
-    message,
-    encryptionSecret: TEST_ENCRYPTION_SECRET,
-  });
-
-  const turnToken =
-    inserted?.turn_token ??
-    inserted?.turnToken ??
-    (typeof inserted === "string" ? inserted : null);
-  assert.ok(
-    typeof turnToken === "string" && turnToken.length > 0,
-    "insertTurnContext must return turn_token",
-  );
-
-  /** @type {Request | null} */
-  let capturedRequest = null;
-  const mockApp = {
+  /** @type {unknown} */
+  let capturedDispatchRequest;
+  const port = {
     /**
-     * @param {Request | string} input
-     * @param {RequestInit} [init]
+     * @param {unknown} request
      */
-    fetch: async (input, init) => {
-      capturedRequest =
-        input instanceof Request
-          ? input
-          : new Request(String(input), init);
-      return new Response(JSON.stringify({ result: "ok mock" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
+    dispatch: async (request) => {
+      capturedDispatchRequest = request;
+      return {
+        submissionId: "sub-dispatch-only",
+        acceptedAt: new Date().toISOString(),
+        uid: "uid-dispatch-only",
+      };
+    },
+    /**
+     * @param {{ submissionId: string }} receipt
+     * @param {{ onEvent?: (chunk: unknown) => void }} options
+     */
+    read: async (receipt, options) => {
+      options.onEvent?.({
+        type: "submission-settled",
+        submissionId: receipt.submissionId,
+        outcome: "completed",
       });
+      return { text: "ok dispatch only", data: {}, submissionId: receipt.submissionId };
     },
   };
 
-  await runAgentTurn({
-    sessionId,
-    message,
-    turnToken,
-    agentInternalSecret: AGENT_SECRET,
-    app: mockApp,
-    // gated identity (must NOT appear in JSON body — only in D1 / headers path)
-    empresaId: emp.id,
-    expertId: expert.id,
-    userId: user.id,
-    surface: "topic",
-    provider: "openai",
-    apiKey: plaintextKey,
-    db,
-  });
+  const result = await runAgentTurn({ sessionId, message, port });
 
-  assert.ok(capturedRequest instanceof Request, "app.fetch must receive a Request");
-  const url = new URL(capturedRequest.url);
-  assert.equal(
-    url.pathname,
-    `/agents/gestao-bot/${sessionId}`,
-    "POST path must be /agents/gestao-bot/<sessionId>",
+  assert.ok(
+    capturedDispatchRequest && typeof capturedDispatchRequest === "object",
+    "port.dispatch must be called with an object",
   );
-  assert.equal(url.searchParams.get("wait"), "result", "query must include wait=result");
-  assert.equal(
-    capturedRequest.headers.get(SECRET_HEADER),
-    AGENT_SECRET,
-    "header x-gestao-agent-internal-secret must be set",
-  );
-  assert.equal(
-    capturedRequest.headers.get(TURN_TOKEN_HEADER),
-    turnToken,
-    "header x-gestao-turn-token must be set",
-  );
-
-  const rawBody = await capturedRequest.text();
-  const bodyJson = JSON.parse(rawBody);
-  assert.ok(bodyJson && typeof bodyJson === "object", "body must be JSON object");
-  const keys = Object.keys(bodyJson).sort();
+  const dispatchKeys = Object.keys(
+    /** @type {Record<string, unknown>} */ (capturedDispatchRequest),
+  ).sort();
   assert.deepEqual(
-    keys,
+    dispatchKeys,
     ["message"],
-    "JSON body keys must be exactly {message}",
+    "port.dispatch request keys must be exactly {message} — no gated identity, no turnToken",
   );
-  assert.equal(bodyJson.message, message);
-
-  // Forbidden keys must not appear in body
-  for (const forbidden of [
-    "empresa_id",
-    "empresaId",
-    "apiKey",
-    "api_key",
-    "bot_token",
-    "botToken",
-  ]) {
-    assert.equal(
-      Object.prototype.hasOwnProperty.call(bodyJson, forbidden),
-      false,
-      `JSON body must not include ${forbidden}`,
-    );
-  }
-
-  // Turn row in D1 holds gated fields
-  const row = db
-    .prepare(
-      `SELECT turn_token, empresa_id, expert_id, actor_user_id, surface, provider,
-              api_key_ciphertext, api_key_iv, message
-       FROM telegram_agent_turn_context WHERE turn_token = ?`,
-    )
-    .get(turnToken);
-  assert.ok(row, "turn row must exist in D1");
-  assert.equal(row.empresa_id, emp.id);
-  assert.equal(row.expert_id, expert.id);
-  assert.equal(row.actor_user_id, user.id);
-  assert.equal(row.surface, "topic");
-  assert.equal(row.provider, "openai");
-  assert.equal(row.message, message);
-  assert.equal(typeof row.api_key_ciphertext, "string");
-  assert.ok(row.api_key_ciphertext.length > 0, "api_key_ciphertext must be non-empty");
-  assert.equal(typeof row.api_key_iv, "string");
-  assert.ok(row.api_key_iv.length > 0, "api_key_iv must be non-empty");
-  assert.notEqual(
-    row.api_key_ciphertext,
-    plaintextKey,
-    "ciphertext must not equal plaintext apiKey",
+  assert.equal(
+    /** @type {{ message: unknown }} */ (capturedDispatchRequest).message,
+    message,
+    "dispatched message must equal the input message",
   );
 
-  // Sanity: encrypt shape matches encryptLlmApiKey pair (hex-ish non-empty)
-  const sample = await encryptLlmApiKey(TEST_ENCRYPTION_SECRET, "x");
-  assert.equal(typeof sample.ciphertextHex, "string");
-  assert.equal(typeof sample.ivHex, "string");
-
-  db.close();
+  assert.equal(result.text, "ok dispatch only");
+  assert.equal(result.key, "sub-dispatch-only");
 });
 
 // ─── lt-run-agent-turn-safe-on-failure ─────────────────────────────────────
 
 /**
- * @description When injected fetch/app throws or returns non-2xx, runAgentTurn resolves to non-empty pt-br safe reply and does not throw.
+ * @description When the injected port's read() rejects (AgentRunError-shaped failure) or the
+ * dispatch itself throws, runAgentTurn resolves a non-empty pt-br safe reply with a null key and
+ * never throws.
  */
-test("lt-run-agent-turn-safe-on-failure: throw or non-2xx → non-empty pt-br safe reply, no throw", async () => {
+test("lt-run-agent-turn-safe-on-failure: read()/dispatch() rejection → SAFE_REPLY, null key, no throw", async () => {
   const sessionId = "dm:user-safe-1";
-  const baseArgs = {
-    sessionId,
-    message: "oi",
-    turnToken: "turn-token-safe-fail",
-    agentInternalSecret: AGENT_SECRET,
-  };
+  const message = "oi";
 
-  // Case 1: fetch throws
-  const throwingApp = {
-    fetch: async () => {
-      throw new Error("simulated network failure");
+  // Case 1: read() rejects
+  const rejectingReadPort = {
+    dispatch: async () => ({
+      submissionId: "sub-safe-1",
+      acceptedAt: new Date().toISOString(),
+      uid: "uid-safe-1",
+    }),
+    read: async () => {
+      throw new Error("simulated failed/aborted submission");
     },
   };
   let threw1 = false;
-  /** @type {unknown} */
+  /** @type {{ text: string, key: string | null } | undefined} */
   let result1;
   try {
-    result1 = await runAgentTurn({ ...baseArgs, app: throwingApp });
+    result1 = await runAgentTurn({ sessionId, message, port: rejectingReadPort });
   } catch {
     threw1 = true;
   }
-  assert.equal(threw1, false, "runAgentTurn must not throw when fetch throws");
+  assert.equal(threw1, false, "runAgentTurn must not throw when port.read() rejects");
+  assert.ok(result1, "runAgentTurn must resolve a result on the failure path");
+  assert.equal(result1.text, SAFE_REPLY, "failed read must resolve exactly SAFE_REPLY");
+  assert.equal(result1.key, null, "failed read must resolve a null dedupe key");
   assert.ok(
-    isNonEmptyPtBrSafeReply(result1),
-    `throw path must resolve to non-empty pt-br safe reply, got: ${String(result1)}`,
+    isNonEmptyPtBrSafeReply(result1.text),
+    `SAFE_REPLY must be non-empty pt-br, got: ${String(result1.text)}`,
   );
 
-  // Case 2: non-2xx response
-  const non2xxApp = {
-    fetch: async () =>
-      new Response(JSON.stringify({ error: "upstream" }), {
-        status: 502,
-        headers: { "content-type": "application/json" },
-      }),
+  // Case 2: dispatch() itself throws
+  const throwingDispatchPort = {
+    dispatch: async () => {
+      throw new Error("simulated dispatch failure");
+    },
+    read: async () => {
+      throw new Error("unreachable — dispatch already failed");
+    },
   };
   let threw2 = false;
-  /** @type {unknown} */
+  /** @type {{ text: string, key: string | null } | undefined} */
   let result2;
   try {
-    result2 = await runAgentTurn({ ...baseArgs, app: non2xxApp });
+    result2 = await runAgentTurn({ sessionId, message, port: throwingDispatchPort });
   } catch {
     threw2 = true;
   }
-  assert.equal(threw2, false, "runAgentTurn must not throw on non-2xx");
-  assert.ok(
-    isNonEmptyPtBrSafeReply(result2),
-    `non-2xx path must resolve to non-empty pt-br safe reply, got: ${String(result2)}`,
-  );
+  assert.equal(threw2, false, "runAgentTurn must not throw when port.dispatch() throws");
+  assert.ok(result2, "runAgentTurn must resolve a result on the dispatch-failure path");
+  assert.equal(result2.text, SAFE_REPLY);
+  assert.equal(result2.key, null);
 });

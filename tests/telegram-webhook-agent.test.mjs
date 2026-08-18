@@ -421,12 +421,15 @@ function getTool(tools, name) {
 }
 
 /**
- * @description Invoke tool via run({ input }).
+ * @description Invoke tool via run({ data }) (Flue 2.x), unwrapping the { output } envelope.
  * @param {{ run: Function }} tool
  * @param {Record<string, unknown>} [input]
  */
 async function invokeTool(tool, input = {}) {
-  return tool.run({ input });
+  const result = await tool.run({ data: input });
+  return result && typeof result === "object" && "output" in result
+    ? /** @type {{ output: unknown }} */ (result).output
+    : result;
 }
 
 /**
@@ -607,7 +610,7 @@ test("lt-webhook-two-turns-same-session: two updates same chat/thread → identi
     sessionIds[1],
     "both calls must receive the identical sessionId",
   );
-  assert.equal(expectedSessionId, "topic:-1001:42");
+  assert.equal(expectedSessionId, "tp2:-1001:42");
 
   db.close();
 });

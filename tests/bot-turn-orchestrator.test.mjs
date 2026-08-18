@@ -410,6 +410,22 @@ function replyOf(result) {
 }
 
 /**
+ * @description Extract answeredBySubmissionId from handleBotTurn's new return shape
+ * ({ reply, answeredBySubmissionId }) — must be a string or null, never undefined.
+ * @param {unknown} result
+ */
+function answeredBySubmissionIdOf(result) {
+  assert.ok(result && typeof result === "object", "handleBotTurn must return object");
+  const key = /** @type {{ answeredBySubmissionId?: unknown }} */ (result)
+    .answeredBySubmissionId;
+  assert.ok(
+    key === null || typeof key === "string",
+    `result.answeredBySubmissionId must be string or null, got: ${JSON.stringify(key)}`,
+  );
+  return /** @type {string | null} */ (key);
+}
+
+/**
  * @description Normalize insertTurnContext call args to a plain fields object.
  * @param {unknown[]} callArgs — (db, input) or (input)
  */
@@ -491,6 +507,11 @@ test("lt-orch-unlinked-no-agent: unlinked topic @mention → runAgentTurn=0, no 
   assert.ok(
     isNonEmptyPtBr(reply),
     `reply must be non-empty pt-br fail-closed copy, got: ${reply}`,
+  );
+  assert.equal(
+    answeredBySubmissionIdOf(result),
+    null,
+    "a gate copy (no agent call) must resolve a null dedupe key — never suppressed by the send guard",
   );
 
   db.close();
@@ -1219,7 +1240,7 @@ test("lt-orch-identity-minimal: topic success → sessionId/message/turnToken/id
     llmKeyEncryptionSecret: TEST_ENCRYPTION_SECRET,
     runAgentTurn: async (args) => {
       agentCalls.push(/** @type {Record<string, unknown>} */ (args ?? {}));
-      return "ok identity";
+      return { text: "ok identity", key: "sub-idmin-1" };
     },
     insertTurnContext: async (...args) => {
       insertCalls.push(args);
@@ -1230,12 +1251,17 @@ test("lt-orch-identity-minimal: topic success → sessionId/message/turnToken/id
     },
   });
 
-  assert.ok(replyOf(result));
+  assert.equal(replyOf(result), "ok identity");
+  assert.equal(
+    answeredBySubmissionIdOf(result),
+    "sub-idmin-1",
+    "handleBotTurn must thread the resolved dedupe key from runAgentTurn's { key } result",
+  );
   assert.equal(agentCalls.length, 1, "runAgentTurn must be called once");
   const args = agentCalls[0];
 
   assert.equal(typeof args.sessionId, "string", "args.sessionId required");
-  assert.equal(args.sessionId, "topic:-2001:42", "sessionId must be topic form");
+  assert.equal(args.sessionId, "tp2:-2001:42", "sessionId must be topic form");
   assert.equal(typeof args.message, "string", "args.message required");
   assert.ok(
     String(args.message).length > 0,
@@ -1357,11 +1383,16 @@ test("lt-orch-writes-turn-row-then-agent: turn row before runAgentTurn once; cre
         true,
         "turn row must already exist when runAgentTurn is invoked",
       );
-      return "ok order";
+      return { text: "ok order", key: "sub-order-1" };
     },
   });
 
-  assert.ok(replyOf(result));
+  assert.equal(replyOf(result), "ok order");
+  assert.equal(
+    answeredBySubmissionIdOf(result),
+    "sub-order-1",
+    "handleBotTurn must thread the resolved dedupe key through",
+  );
   assert.deepEqual(
     order,
     ["insert", "agent"],
