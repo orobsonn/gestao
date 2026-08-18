@@ -171,6 +171,16 @@ function expandScriptChain(scripts, name, seen = new Set()) {
   for (const m of runRefs) {
     out.push(...expandScriptChain(scripts, m[1], seen));
   }
+  // Follow `node scripts/x.mjs` into the file. Without this the chain stops at the delegating
+  // script and the invariant reads as absent while the deploy genuinely performs it — the whole
+  // point is to pin the STEP, wherever the deploy chose to put it.
+  const nodeRefs = body.matchAll(/node\s+((?:\.\/)?scripts\/[a-zA-Z0-9._/-]+\.mjs)/g);
+  for (const m of nodeRefs) {
+    const scriptPath = resolve(ROOT, m[1]);
+    if (seen.has(scriptPath) || !existsSync(scriptPath)) continue;
+    seen.add(scriptPath);
+    out.push(readFileSync(scriptPath, "utf8"));
+  }
   return out;
 }
 
@@ -178,12 +188,27 @@ function expandScriptChain(scripts, name, seen = new Set()) {
  * @description True when script text includes a flue build step for cloudflare target.
  * @param {string} text
  */
+function stripNonCommandText(text) {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, " ") // block comments
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ") // line comments (not protocol-relative URLs)
+    .replace(/console\.\w+\([\s\S]*?\)/g, " "); // log strings that merely NAME the step
+}
+
+/**
+ * @description True when script text INVOKES a flue build step. Prose does not count: the words
+ * appear in this repo's deploy comments and progress logs, and matching those made the assertion
+ * survive deleting the actual command. Matches a shell form (package.json) or an argv array form
+ * (a node script that spawns it).
+ */
 function includesFlueBuild(text) {
   if (!text) return false;
-  // flue build --target cloudflare | npx flue build | flue build (cloudflare implied)
-  if (/\bflue\s+build\b/.test(text)) return true;
-  if (/\bnpx\s+flue\s+build\b/.test(text)) return true;
-  if (/\b@flue\/cli\b.*\bbuild\b/.test(text)) return true;
+  const code = stripNonCommandText(text);
+  // shell: `flue build ...` / `npx flue build ...`
+  if (/(^|[\s&|;('"`])(npx\s+)?flue\s+build\b/.test(code)) return true;
+  // argv array: run('npx', ['flue', 'build', ...])
+  if (/["']flue["']\s*,\s*["']build["']/.test(code)) return true;
+  if (/@flue\/cli\b[\s\S]{0,40}\bbuild\b/.test(code)) return true;
   return false;
 }
 
