@@ -1,7 +1,10 @@
 /**
  * @description Single source of truth for the gestao-bot agent's durable identity
- * on Flue 2.0.3. wrangler.jsonc and the agent module import these constants so the
- * DO class / binding name / mount path can never silently drift apart.
+ * on Flue 2.0.3. wrangler.jsonc and the tests import these constants; the agent
+ * module CANNOT import GESTAO_BOT_AGENT_NAME because Flue's scanner requires a
+ * string literal for the `agentName` static, so the literal `'gestao-bot-v2'` is
+ * necessarily duplicated in the agent module, and a test oracle is what prevents
+ * the two from drifting.
  *
  * The DO class and binding name are authored here (not derived at runtime) because
  * the derivation was already measured against a real vite build of the Flue 2.0.3
