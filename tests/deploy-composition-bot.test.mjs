@@ -298,10 +298,12 @@ test("lt-agent-route-secret-guard-composition: agent HTTP without secret → 403
     /403|forbidden/i.test(guardSrc),
     "guard module must fail closed with 403/forbidden semantics",
   );
+  const CLOUDFLARE_IMPORT_RE =
+    /(?:from\s*['"]cloudflare:|require\(\s*['"]cloudflare:|import\(\s*['"]cloudflare:)/;
   assert.equal(
-    /cloudflare:/.test(guardSrc),
+    CLOUDFLARE_IMPORT_RE.test(guardSrc),
     false,
-    "guard module must not import cloudflare: (node-importable)",
+    "guard module must not import cloudflare: (node-importable under node --test, where a cloudflare: specifier throws ERR_UNSUPPORTED_ESM_URL_SCHEME)",
   );
 
   // Registration order in the composed worker: guard middleware registered with
