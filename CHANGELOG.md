@@ -11,7 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Motor do bot de Telegram migrado do Flue 1.0.0-beta.9 (beta) para o Flue 2.0.3 — mesmo
+  comportamento do ponto de vista do usuário, runtime novo por baixo
+- Deploy do Worker passa a ser só `npm run deploy` (`wrangler deploy` com build automático antes);
+  o script antigo (`scripts/deploy-gestao.mjs`) foi removido
+
 ### Fixed
+
+- Corrigida falha em que, numa conversa direta (DM) no Telegram, a resposta gerada para uma
+  empresa podia sair usando a chave de API de outra empresa — e uma tarefa criada nesse momento
+  podia ser gravada na empresa errada
+- Corrigido cenário em que trocar de empresa ativa e pedir outra ação na mesma mensagem podia
+  executar a segunda ação ainda na empresa antiga
+- Corrigida falha rara que podia deixar um tópico de grupo do Telegram sem responder quando duas
+  mensagens chegavam quase ao mesmo tempo
+- Rotas internas do agente (`/agents/gestao-bot/<id>` e variações) agora exigem o segredo do
+  webhook em todos os métodos — histórico de conversa de outra empresa não fica mais acessível sem
+  autenticação
 
 ### Removed
 

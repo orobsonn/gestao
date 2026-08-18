@@ -104,6 +104,40 @@ Cloudflare Worker API (Hono) for auth, bootstrap, and platform provision.
   model) for the lifetime of an isolate, and the Worker isolate is shared across all tenants.
   Growth is O(empresas served).
 
+## Flue 2.x agent runtime (tool batches, render, reply dedupe)
+
+- **Tool batches run in PARALLEL (`Promise.all`), and `terminate: true` does NOT abort the
+  batch** — a multi-tool batch only ends the turn when EVERY result in it terminates, so a
+  batch mixing `definir_empresa_ativa` (terminate) with a mutating sibling still runs the
+  sibling, under the OLD empresa closure. A guard flag must be armed as the **first
+  synchronous statement** of `run`, before any `await` — every tool's `run` is reached at the
+  same await depth, so only a synchronous set happens before a sibling's guard reads it. See
+  `empresaSwitchInFlight` / `activeEmpresaSwitched` in `gestao-bot-tools.ts`
+  (`definir_empresa_ativa` sets the flag at the top of its `run`, before its first `await
+  ensureFk()`; every other mutating tool checks `empresaSwitchInFlight || activeEmpresaSwitched`
+  first and refuses with `terminate: true` — a refusal without `terminate: true` leaves the
+  turn running and the model retries in a loop). **A sequential test cannot verify this
+  guarantee** — awaiting the switch to completion before calling the sibling passes against a
+  latch that protects nothing; any oracle for batch behaviour must start both tool calls in the
+  SAME turn of the event loop and `Promise.all` them (real regression: the first version of
+  this project's locked test did exactly this and green-lit a latch that guarded nothing).
+- **The agent render function (`GestaoBot` in `.flue/agents/gestao-bot.ts`) MUST be
+  synchronous** — an `async` agent function fails every submission at the runtime level. It
+  also re-renders **~2x per submission**, so the render body must be side-effect-free (no DB
+  writes) and idempotent. The async seam for credential work is the provider's
+  `auth.apiKey.resolve` callback (here, the `resolveApiKey` closure passed into
+  `createEmpresaProvider`) — the runtime awaits it lazily at model-call time, between renders,
+  so the D1 read + decrypt cost is bounded to once per model call, not once per render.
+- **Reply dedupe key:** `settledChunk.answeredBySubmissionId ?? receipt.submissionId` — never
+  the raw field alone (an ordinary non-coalesced reply can legitimately omit it on some code
+  paths, and against a `TEXT PRIMARY KEY NOT NULL` column that either throws or coerces to the
+  literal string `'undefined'`, silently muting every later solo reply). The
+  `submission-settled` listener MUST filter by `chunk.submissionId === receipt.submissionId`
+  because `read(receipt, { onEvent })` starts at offset `-1` and replays every settlement in
+  the instance's history — without the filter a later coalesced settlement can overwrite this
+  turn's key. Fully implemented and commented in `run-agent-turn.ts`; do not re-derive this
+  from scratch elsewhere.
+
 ## Domain CRUD (experts / campanhas / tarefas)
 
 - **Compose into `createEmpresaApp`:** each domain module exports `registerXRoutes(app, db)` and is wired inside `createEmpresaApp` — single `/api/empresa/*` surface; do not add parallel dispatch in `index.ts`.

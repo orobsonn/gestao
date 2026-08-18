@@ -44,6 +44,7 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 - [turn-context-attributes-not-d1](#turn-context-attributes-not-d1) — the D1 turn-context bridge is deleted; the turn's non-secret facts ride the dispatched signal's `attributes`, the API key is resolved inside the DO
 - [flue-deploy-is-plain-wrangler](#flue-deploy-is-plain-wrangler) — `flue build` does not exist in 2.x; deploy is plain `wrangler deploy` from the project root via the `.wrangler/deploy/config.json` redirect written by `vite build`; `npm run deploy` is the only sanctioned invocation
 - [d1-run-changes-dual-shape](#d1-run-changes-dual-shape) — stmt.run() changes may be `{changes}` (node:sqlite) or `{meta.changes}` (D1); normalize both
+- [flue-vite-pi-ai-pin-cascade](#flue-vite-pi-ai-pin-cascade) — `@flue/vite` peers `vite ^8`, cascading `@cloudflare/vite-plugin`/`@vitejs/plugin-react`/`wrangler`; `@earendil-works/pi-ai` must pin `0.83.0` EXACT (never a caret range) or npm resolves 2-3 distinct copies and forks the provider registry `setProvider()`/`useModel()` read from
 
 ---
 
@@ -348,3 +349,11 @@ One line per durable, reusable, non-obvious project pattern or anti-pattern.
 **Why:** Hermetic node:sqlite returns `{ changes }`; D1 returns `{ meta: { changes } }`. Claim/dedup logic that reads only one shape silently fails open or closed.
 
 **How to apply:** Normalize via helper reading both shapes (see `runChanges` in gestao-bot-tools / claim helpers). Assert `changes === 1` for first-processor semantics.
+
+---
+
+## flue-vite-pi-ai-pin-cascade
+
+**Why:** `@flue/vite@2.0.3` declares `peerDependencies: { vite: "^8.0.0" }`, so adding/upgrading Flue is never an isolated bump — it forces `vite` to `^8`, which forces `@cloudflare/vite-plugin` (peer `vite ^6.1|^7|^8`, needs `^1.53.0`+) and `@vitejs/plugin-react` (peer `vite ≤^7`, needs `^6.0.5`), which in turn needs `wrangler ^4.124.0+`. Separately, `@flue/runtime@2.0.3` depends on `@earendil-works/pi-ai: ^0.83.0` and `pi-agent-core: ^0.83.0` — pinning the project's OWN `pi-ai` dependency to anything outside that range (e.g. `0.84.2`) does not just risk a breaking API change, it makes npm resolve **multiple distinct copies** of the package in `node_modules` (measured: 3 copies at `0.84.2` vs 1 hoisted copy at `0.83.0`). `createProvider()`/`openaiProvider()` from one copy and the `Models` registry `setProvider()`/`useModel()` read/write from another copy are then two different module instances — it survives on structural typing alone until an `instanceof` check, module-level singleton, or symbol identity breaks silently.
+
+**How to apply:** Any future `@flue/vite`/`@flue/runtime` upgrade must re-check the full peer cascade above (vite → cloudflare-plugin → plugin-react → wrangler) with `npm --package-lock-only` BEFORE committing, not just bump the one package the changelog mentions. Pin `@earendil-works/pi-ai` to the EXACT version `@flue/runtime` depends on (currently `0.83.0`, never a caret/tilde range) so only one copy is ever hoisted — verify with `npm ls @earendil-works/pi-ai` showing exactly one resolved version (should print exactly one line). Current pinned versions live in `package.json` (`vite`, `@flue/vite`, `@flue/runtime`, `@earendil-works/pi-ai`, `@cloudflare/vite-plugin`, `@vitejs/plugin-react`, `wrangler`).
