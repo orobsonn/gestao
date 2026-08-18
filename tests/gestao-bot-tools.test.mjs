@@ -1,7 +1,10 @@
 /**
  * Locked gestao bot tools contract — createGestaoBotTools tenant closures.
  * Hermetic: node:sqlite :memory:, PRAGMA foreign_keys=ON, every migrations/*.sql sorted.
- * Invokes tools by name via ToolDefinition.run({ input }); mocks sendNotify.
+ * Invokes tools by name via ToolDefinition.run({ data }) (Flue 2.x); the run resolves a
+ * ToolRunEnvelope { output?, terminate? }. Helpers unwrap the envelope so the behavioural
+ * assertions (tenant closure, DB effects, error branches) read the payload as before.
+ * mocks sendNotify.
  */
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -373,60 +376,78 @@ function getTool(tools, name) {
 }
 
 /**
- * @description Invoke a Flue ToolDefinition via run({ input }).
+ * @description Invoke a Flue 2.x ToolDefinition via run({ data }) and return the
+ * resolved ToolRunEnvelope ({ output?, terminate? }).
  * @param {{ run: Function }} tool
- * @param {Record<string, unknown>} [input]
+ * @param {Record<string, unknown>} [data]
  */
-async function invokeTool(tool, input = {}) {
+async function invokeTool(tool, data = {}) {
   assert.equal(typeof tool.run, "function", "tool must expose run()");
-  return tool.run({ input });
+  return tool.run({ data });
 }
 
 /**
- * @description Flatten tool result to searchable text.
+ * @description Unwrap a Flue 2.x ToolRunEnvelope to its `output` payload. If the value
+ * is not an envelope (no own `output`), return it as-is (defensive — keeps helpers
+ * working against both shapes during the migration).
+ * @param {unknown} result
+ */
+function payloadOf(result) {
+  if (
+    result !== null &&
+    typeof result === "object" &&
+    Object.hasOwn(/** @type {object} */ (result), "output")
+  ) {
+    return /** @type {{ output: unknown }} */ (result).output;
+  }
+  return result;
+}
+
+/**
+ * @description Flatten a tool result (envelope or payload) to searchable text.
+ * Stringifies the `output` payload, not the envelope wrapper.
  * @param {unknown} result
  */
 function resultText(result) {
-  if (result == null) return "";
-  if (typeof result === "string") return result;
+  const payload = payloadOf(result);
+  if (payload == null) return "";
+  if (typeof payload === "string") return payload;
   try {
-    return JSON.stringify(result);
+    return JSON.stringify(payload);
   } catch {
-    return String(result);
+    return String(payload);
   }
 }
 
 /**
- * @description True when tool result signals terminal end-turn / stop.
+ * @description True when tool envelope signals terminal end-turn / stop. Under Flue 2.x
+ * the terminal flag is `terminate: true` on the envelope (the beta `terminal: true`
+ * payload key is gone). Reads the envelope, not the unwrapped payload.
  * @param {unknown} result
  */
 function isTerminalStopResult(result) {
   if (result && typeof result === "object") {
     const r = /** @type {Record<string, unknown>} */ (result);
+    if (r.terminate === true) return true;
+    // Legacy envelope-level keys kept only as a defensive fallback; the 2.x
+    // contract never sets these, so reaching them is a contract regression.
     if (r.terminal === true || r.end_turn === true || r.stop === true) {
       return true;
     }
-    if (
-      r.status === "terminal" ||
-      r.status === "end_turn" ||
-      r.status === "stop" ||
-      r.action === "end_turn" ||
-      r.action === "stop"
-    ) {
-      return true;
-    }
   }
-  return /terminal|end[_-]?turn|\bstop\b/i.test(resultText(result));
+  return false;
 }
 
 /**
  * @description True when result indicates model must ask which campaign / none open.
  * Requires clear ask/require semantics — not mere presence of a status field.
+ * Reads the envelope's `output` payload.
  * @param {unknown} result
  */
 function indicatesAskCampaign(result) {
-  if (result && typeof result === "object") {
-    const status = /** @type {Record<string, unknown>} */ (result).status;
+  const payload = payloadOf(result);
+  if (payload && typeof payload === "object") {
+    const status = /** @type {Record<string, unknown>} */ (payload).status;
     if (
       status === "need_campaign" ||
       status === "ask_campaign" ||
@@ -443,7 +464,7 @@ function indicatesAskCampaign(result) {
 
 /**
  * @description True when result requires explicit campanha_id (DM no LD-6).
- * Requires campanha_id token AND an obligation/required cue.
+ * Requires campanha_id token AND an obligation/required cue. Reads the payload text.
  * @param {unknown} result
  */
 function indicatesRequiresCampanhaId(result) {
@@ -456,6 +477,7 @@ function indicatesRequiresCampanhaId(result) {
 
 /**
  * @description True when result is a not-found / reject without leaking foreign tenant data.
+ * Reads the envelope's `output` payload for ok/error and stringifies the payload for text.
  * @param {unknown} result
  * @param {string} foreignEmpresaId
  */
@@ -465,14 +487,15 @@ function isRejectNoLeak(result, foreignEmpresaId) {
     !text.includes(foreignEmpresaId),
     "reject must not leak foreign empresa id",
   );
+  const payload = payloadOf(result);
   return (
     /n[aã]o\s+encontr|not\s*found|inv[aá]lid|rejeit|negad|erro|error|fail/i.test(
       text,
     ) ||
-    (result &&
-      typeof result === "object" &&
-      (/** @type {Record<string, unknown>} */ (result).ok === false ||
-        /** @type {Record<string, unknown>} */ (result).error != null))
+    (payload &&
+      typeof payload === "object" &&
+      (/** @type {Record<string, unknown>} */ (payload).ok === false ||
+        /** @type {Record<string, unknown>} */ (payload).error != null))
   );
 }
 
@@ -1119,14 +1142,15 @@ test("lt-topic-criar-tarefa-cross-expert-campanha-rejects: cross-expert campanha
   });
   assert.equal(countTarefas(db), before, "no tarefas row must be inserted");
   const text = resultText(result);
+  const payload = payloadOf(result);
   const looksReject =
     /n[aã]o\s+encontr|inv[aá]lid|n[aã]o\s+pertence|campanha|expert|rejeit|erro|not\s*found|fail/i.test(
       text,
     ) ||
-    (result &&
-      typeof result === "object" &&
-      (/** @type {Record<string, unknown>} */ (result).ok === false ||
-        /** @type {Record<string, unknown>} */ (result).error != null));
+    (payload &&
+      typeof payload === "object" &&
+      (/** @type {Record<string, unknown>} */ (payload).ok === false ||
+        /** @type {Record<string, unknown>} */ (payload).error != null));
   assert.ok(looksReject, "tool result must be reject/not-found");
   // #ac-topic-camp.1 — pt-br reject copy (accented tokens or common pt words)
   assert.ok(
