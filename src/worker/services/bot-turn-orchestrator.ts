@@ -36,8 +36,12 @@ function isTopicMention(update: TelegramUpdate | null | undefined, botUsername: 
   const botLower = String(botUsername || '').toLowerCase()
   for (const ent of msg.entities) {
     if (ent.type === 'mention') {
-      if (typeof ent.offset !== 'number' || typeof ent.length !== 'number') continue
-      const mention = text.slice(ent.offset, ent.offset + ent.length)
+      // Coerce rather than reject: the untyped version accepted numeric strings, and narrowing the
+      // accepted input set would silently stop detecting a legitimate mention.
+      const offset = Number(ent.offset)
+      const length = Number(ent.length)
+      if (!Number.isFinite(offset) || !Number.isFinite(length)) continue
+      const mention = text.slice(offset, offset + length)
       if (mention.toLowerCase() === `@${botLower}`) return true
     }
   }
@@ -90,8 +94,13 @@ async function listEmpresasForUserOrdered(db: DbLike, userId: string): Promise<S
         )
         .all(userId),
     )
-    const rows = Array.isArray(rawRows) ? rawRows : []
-  return rows.map((r) => ({ id: String(r.id), nome: String(r.nome) }))
+  // NOT `Array.isArray(...) ? ... : []`. The caller treats an empty list as "this user belongs to
+  // no empresa" and responds by DELETING their active-empresa pin, so a broken adapter must never
+  // be able to look like that. Every other multi-row read here throws the same way.
+  if (!Array.isArray(rawRows)) {
+    throw new Error('db statement all() did not return an array')
+  }
+  return rawRows.map((r) => ({ id: String(r.id), nome: String(r.nome) }))
 }
 
 /** @description Check if text matches selector for bootstrap pin (exact id, unique nome, or 1-based index). Returns empresa or null. */
