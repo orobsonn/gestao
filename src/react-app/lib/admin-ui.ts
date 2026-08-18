@@ -145,6 +145,8 @@ export type LlmModelSaveState = {
   selectedProvider: string;
   modelSelection: string;
   savedModelId: string | null;
+  /** The id that was dropped for leaving the catalog, when the stored choice degraded. */
+  retiredModelId: string | null;
 };
 
 /**
@@ -153,11 +155,17 @@ export type LlmModelSaveState = {
  * The model PUT carries no provider — the server validates against the SAVED one. So while the
  * provider dropdown disagrees with what is saved, saving would silently change the model of the
  * OLD provider while the screen claims the new one.
+ *
+ * A retired stored model reads back as `savedModelId: null`, which is also what the default option
+ * maps to — so the plain change check would call "return to the default" a no-op and disable the
+ * one save that clears the dead id. That leaves the operator told to act with the cheap action
+ * barred, and the notice returning on every load. A pending retirement is therefore always saveable.
  */
 export function canSaveLlmModel(state: LlmModelSaveState): boolean {
   if (state.saving || state.savingModel || state.validating) return false;
   if (!state.savedProvider) return false;
   if (state.selectedProvider !== state.savedProvider) return false;
+  if (state.retiredModelId) return true;
   return state.modelSelection !== llmModelSelectValue(state.savedModelId);
 }
 

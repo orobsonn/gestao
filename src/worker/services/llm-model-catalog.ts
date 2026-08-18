@@ -14,9 +14,20 @@ export type LlmProvider = 'openai' | 'anthropic'
  * KNOWN LOSS, not guarded here: a per-empresa provider id is unknown to Flue's catalog, so
  * `reasoning`, `cost`, `input`, `compat` and `thinkingLevelMap` are dropped. Because `reasoning`
  * is zeroed, every curated model is treated as non-reasoning and the `thinkingLevelMap` branch is
- * unreachable — the live loss is `compat`. Guarding on "carries no compat" would remove
- * `claude-sonnet-4-6`, which is the LOCKED per-provider default, so that guard is an operator
- * decision and is deliberately NOT applied here. See src/worker/AGENTS.md.
+ * unreachable — the live losses are `compat` and `input`. Guarding on "carries no compat" would
+ * remove 7 of the 9 ids below, leaving only `gpt-4o-mini` and `claude-haiku-4-5` — and one of the
+ * evicted is `claude-sonnet-4-6`, the LOCKED per-provider default. That guard is an operator
+ * decision and is deliberately NOT applied here. See src/worker/AGENTS.md for the per-id table.
+ *
+ * ⚠️ BEFORE REMOVING AN ID FROM THIS LIST, read this. The catalog degrade is READ-ONLY: the
+ * empresa's `model_id` column is never rewritten. So removing an id makes the dashboard report the
+ * choice as discarded and the bot fall back to the default — but the dead id stays in the column.
+ * Put that id BACK later and the stored choice RESURRECTS silently: the notice disappears on its
+ * own and the bot resumes the old model, at the old price, with nobody acting and `cost` zeroed in
+ * telemetry so the spend change is invisible. Whether a returning id should resurrect the choice or
+ * whether the degrade should be persisted is an UNANSWERED OPERATOR DECISION — do not settle it by
+ * editing this list. An admin can clear the dead id manually (the retirement makes the default
+ * saveable, see `canSaveLlmModel`), but nothing forces them to.
  */
 const CATALOG = {
   openai: ['gpt-4o-mini', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],

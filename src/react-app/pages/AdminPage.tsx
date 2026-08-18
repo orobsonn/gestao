@@ -725,6 +725,7 @@ export function AdminPage() {
                               selectedProvider: provider,
                               modelSelection,
                               savedModelId: llmMeta?.model_id ?? null,
+                              retiredModelId: llmMeta?.retired_model_id ?? null,
                             })
                           }
                           onClick={() => {

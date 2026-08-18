@@ -48,6 +48,7 @@ async function seedValidSettings(db, { empresaId, provider, modelId }) {
        (empresa_id, provider, model_id, api_key_ciphertext, api_key_iv, status)
      VALUES (?, ?, ?, ?, ?, 'valid')`,
   ).run(empresaId, provider, modelId, ciphertextHex, ivHex);
+  return { ciphertextHex, ivHex };
 }
 
 /** @description Valid Anthropic settings resolve a configured provider-native model to its exact namespaced turn model. */
@@ -231,7 +232,7 @@ test("lt-catalog-models-resolve-in-runtime: every curated id resolves with a usa
  */
 test("lt-retired-model-degrades-in-gate: a well-formed non-curated model falls back", async () => {
   const db = openDb();
-  await seedValidSettings(db, {
+  const { ciphertextHex, ivHex } = await seedValidSettings(db, {
     empresaId: "empresa-retired",
     provider: "openai",
     modelId: "text-embedding-3-large",
@@ -261,7 +262,11 @@ test("lt-retired-model-degrades-in-gate: a well-formed non-curated model falls b
   assert.equal(degrade.length, 1, "the catalog degrade must emit exactly one structured warning");
   assert.equal(degrade[0].op, "loadEmpresaLlmForBot");
   for (const line of warnings) {
-    assert.doesNotMatch(line, /api_key|ciphertext|sk-/i, "the warning must not carry key material");
+    assert.equal(line.includes(API_KEY), false, "the warning must not carry the plaintext key");
+    assert.equal(line.includes(ciphertextHex), false, "the warning must not carry the ciphertext");
+    assert.equal(line.includes(ivHex), false, "the warning must not carry the iv");
+    // Kept as a second layer for shapes this file does not seed (e.g. a real sk- key).
+    assert.doesNotMatch(line, /api_key|ciphertext|sk-/i, "the warning must not name key material");
   }
 
   assert.equal(result.ok, true);

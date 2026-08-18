@@ -34,7 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   todo turno; agora volta ao padrão do provedor
 - Modelo salvo com espaço em branco tinha o mesmo efeito; agora também cai no padrão
 - Quando um modelo escolhido sai do catálogo, o dashboard passa a dizer qual era, em vez de
-  simplesmente voltar para "Padrão do provedor" sem explicação
+  simplesmente voltar para "Padrão do provedor" sem explicação — e "Padrão do provedor" fica
+  salvável nesse estado, senão o aviso mandaria agir com a ação mais barata bloqueada
 - Trocar de empresa não carrega mais o provedor e o modelo da empresa anterior para a tela da nova
 
 ### Removed

@@ -35,6 +35,16 @@ Cloudflare Worker API (Hono) for auth, bootstrap, and platform provision.
   "valid". Pinned by `lt-catalog-models-resolve-in-runtime`.
 - **Each provider's locked default must be a catalog member**, or a legacy empresa cannot select
   the model it is running on and clearing becomes a one-way door.
+- **The catalog degrade is READ-ONLY, so removing an id is not reversible for free.** Neither
+  `toMetadata` nor `loadEmpresaLlmForBot` rewrites `empresa_llm_settings.model_id` — they derive
+  around it. Drop an id from the catalog and the stored value survives in the column; restore the
+  id and the empresa's choice RESURRECTS with no admin action, the retirement notice vanishes on
+  its own, and the bot silently returns to that model's price (invisible: `cost` is zeroed under a
+  non-catalog provider id). **UNANSWERED OPERATOR DECISION:** should a returning id resurrect the
+  choice, or should the read-time degrade be persisted (a CAS `UPDATE … SET model_id = NULL WHERE
+  empresa_id = ? AND model_id = ?`)? Not settled here — today's UI copy implies the second, the
+  code does the first. Currently inert: `model_id` ships in migration `0008`, so no stored row
+  predates it.
 - **PUT body is a `.strict()` exclusive union**: either `{provider, api_key}` or
   `{model_id: string | null}`. `null` clears back to the default; the empty string is rejected —
   persisting it would make the gate unable to resolve and the empresa's bot go silent.
@@ -59,14 +69,23 @@ Cloudflare Worker API (Hono) for auth, bootstrap, and platform provision.
   `reasoning`, `input` and `compat` are zeroed by construction under any non-catalog id. Per-turn
   cost telemetry therefore reads zero, and a reasoning model is treated as non-reasoning.
   Because `reasoning` is zeroed, the `thinkingLevelMap` branch in the wire builders is
-  UNREACHABLE — the live loss is **`compat`**. Concretely: `claude-sonnet-4-6`,
-  `claude-sonnet-5` and `claude-opus-4-8` carry `compat.forceAdaptiveThinking`, whose absence
-  means every anthropic turn currently ships the `anthropic-beta: interleaved-thinking-2025-05-14`
-  header that pi-ai suppresses on purpose for those models; and `claude-opus-4-8` carries
-  `compat.supportsTemperature: false`, latent until someone sets a temperature.
+  UNREACHABLE — the live losses are **`compat`** and **`input`**. Concretely:
+  - `claude-sonnet-4-6`, `claude-fable-5`, `claude-sonnet-5` and `claude-opus-4-8` carry
+    `compat.forceAdaptiveThinking`, whose absence means every anthropic turn currently ships the
+    `anthropic-beta: interleaved-thinking-2025-05-14` header pi-ai suppresses on purpose for them.
+  - `gpt-5.6-sol`, `gpt-5.6-terra` and `gpt-5.6-luna` carry `compat.supportsToolSearch`, read live
+    at `api/openai-responses.js:53` and passed to `splitDeferredTools` at `:177` — so tool-search
+    is silently OFF for three of the four curated openai models.
+  - `claude-opus-4-8` also carries `compat.supportsTemperature: false`, latent until someone sets
+    a temperature.
+  - Every curated id declares `input: ["text","image"]`; `zeroMetadataModel` rewrites it to
+    `["text"]`, and `api/transform-messages.js:20` gates image handling on it. Image input is off
+    across the board — latent while the bot sends text only.
   **OPERATOR DECISION, NOT TAKEN HERE:** a "no curated id may carry compat" guard would evict
-  `claude-sonnet-4-6`, which is the locked anthropic default. Choosing between moving that default
-  (only `claude-haiku-4-5` has no compat) and accepting the loss is the operator's call.
+  **7 of the 9** curated ids — only `gpt-4o-mini` and `claude-haiku-4-5` survive — and one of the
+  evicted is `claude-sonnet-4-6`, the locked anthropic default. Choosing between moving that
+  default and accepting the loss is the operator's call. Do not quote a smaller blast radius: an
+  earlier draft of this bullet named only three ids and made the guard look nearly free.
   Pass `telemetry.providerName` so observability aggregates by `openai`/`anthropic` — note the
   event's `providerId` still carries the derived id, so this is aggregation, not containment.
 - **There is NO per-turn output-token ceiling.** The registration passes the canonical

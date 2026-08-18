@@ -1,10 +1,14 @@
 /**
  * Locked Admin LLM model-selection contract — the pure decision surface behind #uj-1:
  * which value is sent, when the save is available, and what the operator is told.
- * Hermetic: pure module imports only. Nothing is rendered and no source text is asserted.
+ * Hermetic: pure module imports only, with ONE deliberate exception at the end — the retirement
+ * notice is JSX with no pure seam, and without a source assertion deleting it keeps the suite green.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   canSaveLlmModel,
   LLM_MODEL_DEFAULT_LABEL,
@@ -26,6 +30,7 @@ const SAVEABLE = {
   selectedProvider: "openai",
   modelSelection: "gpt-5.6-terra",
   savedModelId: "gpt-4o-mini",
+  retiredModelId: null,
 };
 
 /** @description The sentinel round-trips to null so the API never receives an empty string. */
@@ -109,6 +114,29 @@ test("lt-llm-model-save-availability: the truth table of when saving is offered"
     false,
     "already on the default is not a change",
   );
+
+  // A retired model reads back as savedModelId null — the same value the default option maps to.
+  // Without this, the notice tells the operator to act while barring the cheapest action, and the
+  // dead id stays in the column forever.
+  assert.equal(
+    canSaveLlmModel({
+      ...SAVEABLE,
+      savedModelId: null,
+      modelSelection: LLM_MODEL_DEFAULT_OPTION,
+      retiredModelId: "text-embedding-3-large",
+    }),
+    true,
+    "clearing a retired model back to the default must be saveable",
+  );
+
+  // The busy/provider guards still outrank a pending retirement.
+  for (const blocked of [{ saving: true }, { selectedProvider: "anthropic" }]) {
+    assert.equal(
+      canSaveLlmModel({ ...SAVEABLE, retiredModelId: "text-embedding-3-large", ...blocked }),
+      false,
+      `a retired model must not override ${JSON.stringify(blocked)}`,
+    );
+  }
 });
 
 /** @description The helper copy explains every state in which the Select is inert. */
@@ -145,5 +173,30 @@ test("lt-llm-retired-model-copy: the discarded choice is named, and absent when 
     copy,
     /gpt-5\.6-luna/,
     "the notice must name the model that was dropped, or the operator cannot act on it",
+  );
+});
+
+const ADMIN_PAGE = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../src/react-app/pages/AdminPage.tsx",
+);
+
+/**
+ * @description The notice is the only visible artefact of the retirement path and it is plain JSX,
+ * so no pure export can pin it. Without this, deleting the block silently restores the exact
+ * failure the notice exists to fix: the choice is discarded and nobody is told.
+ */
+test("lt-llm-retired-notice-is-wired: the DTO field feeds the rendered notice and the save gate", () => {
+  const src = readFileSync(ADMIN_PAGE, "utf8");
+
+  assert.match(
+    src,
+    /llmRetiredModelCopy\(\s*llmMeta\?\.retired_model_id/,
+    "the notice must be rendered from the DTO field, not from local state",
+  );
+  assert.match(
+    src,
+    /retiredModelId:\s*llmMeta\?\.retired_model_id/,
+    "the save gate must receive the retirement, or clearing the dead id stays disabled",
   );
 });
