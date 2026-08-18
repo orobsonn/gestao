@@ -1,6 +1,15 @@
 /**
- * Locked deploy composition: Vite worker entry + Flue DO bindings + agent secret guard.
- * Source-inspection style (hermetic file reads); optional guard invoke for 403 contract.
+ * Locked deploy composition: Flue agent mount ordering before the ASSETS catch-all,
+ * the Telegram webhook dispatch with its LD-21 deps, and the agent secret guard.
+ * Source-inspection style (hermetic file reads); the guard test invokes the agent
+ * module for the 403 contract.
+ *
+ * The Flue 2.0.3 migration (t1-build-wiring) REVOKED two assertions that pinned the
+ * retired Vite-owned worker entry and the `flue build` deploy step:
+ *   - lt-wrangler-assets-and-main   (wrangler main + additive DO migration)
+ *   - lt-deploy-script-runs-flue-build (deploy/build includes a flue build step)
+ * Flue 2.0.3 now generates the worker entry and DO bindings via flueWorkerConfig();
+ * `scripts/deploy-gestao.mjs` is retired in favor of plain `wrangler deploy`.
  */
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
@@ -10,73 +19,13 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
-const WRANGLER_JSONC_PATH = resolve(ROOT, "wrangler.jsonc");
-const PACKAGE_JSON_PATH = resolve(ROOT, "package.json");
 const WORKER_INDEX_PATH = resolve(ROOT, "src/worker/index.ts");
 const FLUE_APP_PATH = resolve(ROOT, ".flue/app.ts");
 const GESTAO_BOT_AGENT_PATH = resolve(ROOT, ".flue/agents/gestao-bot.ts");
 
-const DO_CLASS = "FlueGestaoBotAgent";
 const ASSETS_CATCHALL_RE = /app\.all\(\s*['"`]\*['"`]\s*,/;
 const SECRET_HEADER = "x-gestao-agent-internal-secret";
 const AGENT_SECRET_ENV = "GESTAO_AGENT_INTERNAL_SECRET";
-
-/**
- * @description Strip // and block comments from JSONC so JSON.parse can read wrangler.jsonc.
- * @param {string} raw
- */
-function parseJsonc(raw) {
-  const stripped = raw
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^\s*\/\/.*$/gm, "");
-  return JSON.parse(stripped);
-}
-
-/**
- * @description Collect class names from wrangler DO migration entries (new_classes / new_sqlite_classes).
- * @param {unknown} wrangler
- * @returns {{ classes: string[], hasDeletedClasses: boolean, migrationEntries: unknown[] }}
- */
-function collectDoMigrationInfo(wrangler) {
-  const cfg = /** @type {Record<string, unknown>} */ (wrangler);
-  /** @type {unknown[]} */
-  const migrationEntries = [];
-  if (Array.isArray(cfg.migrations)) {
-    migrationEntries.push(...cfg.migrations);
-  }
-  const durableObjects = cfg.durable_objects;
-  if (
-    durableObjects &&
-    typeof durableObjects === "object" &&
-    Array.isArray(/** @type {Record<string, unknown>} */ (durableObjects).migrations)
-  ) {
-    migrationEntries.push(
-      .../** @type {unknown[]} */ (
-        /** @type {Record<string, unknown>} */ (durableObjects).migrations
-      ),
-    );
-  }
-
-  /** @type {string[]} */
-  const classes = [];
-  let hasDeletedClasses = false;
-  for (const entry of migrationEntries) {
-    if (!entry || typeof entry !== "object") continue;
-    const m = /** @type {Record<string, unknown>} */ (entry);
-    if (Array.isArray(m.deleted_classes) && m.deleted_classes.length > 0) {
-      hasDeletedClasses = true;
-    }
-    for (const key of ["new_sqlite_classes", "new_classes"]) {
-      const list = m[key];
-      if (Array.isArray(list)) {
-        for (const name of list) {
-          if (typeof name === "string") classes.push(name);
-        }
-      }
-    }
-  }
-  return { classes, hasDeletedClasses, migrationEntries };
-}
 
 /**
  * @description Index of first flue()/agents mount marker in source, or -1.
@@ -146,124 +95,6 @@ function looksLikeSuccessfulAgentTurn(bodyText) {
   }
   return false;
 }
-
-/**
- * @description Collect script strings from package.json including pre/post hooks they may invoke.
- * @param {Record<string, string>} scripts
- * @param {string} name
- * @param {Set<string>} [seen]
- * @returns {string[]}
- */
-function expandScriptChain(scripts, name, seen = new Set()) {
-  if (seen.has(name)) return [];
-  seen.add(name);
-  const body = scripts[name];
-  if (typeof body !== "string") return [];
-  /** @type {string[]} */
-  const out = [body];
-  for (const hook of [`pre${name}`, `post${name}`]) {
-    if (typeof scripts[hook] === "string") {
-      out.push(...expandScriptChain(scripts, hook, seen));
-    }
-  }
-  // Follow npm run X references one level deep for composition chains.
-  const runRefs = body.matchAll(/npm\s+run\s+([a-zA-Z0-9:_-]+)/g);
-  for (const m of runRefs) {
-    out.push(...expandScriptChain(scripts, m[1], seen));
-  }
-  // Follow `node scripts/x.mjs` into the file. Without this the chain stops at the delegating
-  // script and the invariant reads as absent while the deploy genuinely performs it — the whole
-  // point is to pin the STEP, wherever the deploy chose to put it.
-  const nodeRefs = body.matchAll(/node\s+((?:\.\/)?scripts\/[a-zA-Z0-9._/-]+\.mjs)/g);
-  for (const m of nodeRefs) {
-    const scriptPath = resolve(ROOT, m[1]);
-    if (seen.has(scriptPath) || !existsSync(scriptPath)) continue;
-    seen.add(scriptPath);
-    out.push(readFileSync(scriptPath, "utf8"));
-  }
-  return out;
-}
-
-/**
- * @description True when script text includes a flue build step for cloudflare target.
- * @param {string} text
- */
-function stripNonCommandText(text) {
-  return text
-    // Require the `/*` to start a token, so a glob like "src/**/*" or a regex literal cannot open
-    // a runaway "comment" that swallows the real command and fails the test for the wrong reason.
-    .replace(/(^|[\s;{}(])\/\*[\s\S]*?\*\//g, "$1 ")
-    // `[^:/]` (not `[^:]`) so the third slash of file:/// cannot open a "line comment" either.
-    .replace(/(^|[^:/])\/\/[^\n]*/g, "$1 ")
-    .replace(/console\.\w+\([\s\S]*?\)/g, " "); // log strings that merely NAME the step
-}
-
-/**
- * @description True when script text INVOKES a flue build step. Prose does not count: the words
- * appear in this repo's deploy comments and progress logs, and matching those made the assertion
- * survive deleting the actual command. Matches a shell form (package.json) or an argv array form
- * (a node script that spawns it).
- */
-function includesFlueBuild(text) {
-  if (!text) return false;
-  const code = stripNonCommandText(text);
-  // shell: `flue build ...` / `npx flue build ...`
-  if (/(^|[\s&|;('"`])(npx\s+)?flue\s+build\b/.test(code)) return true;
-  // argv array, ANCHORED ON THE SPAWN: `run('npx', ['flue', 'build', ...])`. Matching the bare
-  // adjacency of the two strings would also match `const STEPS = ['flue', 'build']` or a help
-  // text — i.e. it would go green again with the real command deleted.
-  if (
-    /\b(run|spawn|spawnSync|exec|execFile|execFileSync|execSync)\s*\(\s*["'][^"']*(npx|node|flue)[^"']*["']\s*,\s*\[[^\]]*["']flue["']\s*,\s*["']build["']/.test(
-      code,
-    )
-  ) {
-    return true;
-  }
-  if (/@flue\/cli\b[\s\S]{0,40}\bbuild\b/.test(code)) return true;
-  return false;
-}
-
-// ─── lt-wrangler-assets-and-main ───────────────────────────────────────────
-
-/**
- * @description wrangler.jsonc keeps Vite worker main and ASSETS binding; DO migrations for FlueGestaoBotAgent are additive only (no deleted_classes).
- */
-test("lt-wrangler-assets-and-main: main ./src/worker/index.ts, ASSETS binding, additive FlueGestaoBotAgent DO migration", () => {
-  const wrangler = parseJsonc(readFileSync(WRANGLER_JSONC_PATH, "utf8"));
-
-  assert.equal(
-    wrangler.main,
-    "./src/worker/index.ts",
-    "wrangler main must remain ./src/worker/index.ts (Vite SPA worker entry)",
-  );
-
-  assert.ok(
-    wrangler.assets && typeof wrangler.assets === "object",
-    "wrangler assets config must be present",
-  );
-  assert.equal(
-    wrangler.assets.binding,
-    "ASSETS",
-    "assets.binding must be ASSETS",
-  );
-
-  const { classes, hasDeletedClasses, migrationEntries } =
-    collectDoMigrationInfo(wrangler);
-
-  assert.ok(
-    migrationEntries.length > 0,
-    "wrangler must declare durable object migrations for FlueGestaoBotAgent",
-  );
-  assert.ok(
-    classes.includes(DO_CLASS),
-    `DO migrations must include ${DO_CLASS} via new_sqlite_classes or new_classes (got: ${classes.join(", ") || "(none)"})`,
-  );
-  assert.equal(
-    hasDeletedClasses,
-    false,
-    "DO migrations must not use deleted_classes (additive only — no destructive class deletes)",
-  );
-});
 
 // ─── lt-flue-mount-before-assets-catchall ──────────────────────────────────
 
@@ -381,38 +212,6 @@ test("lt-index-webhook-still-mounted: createTelegramApp LD-21 deps + ASSETS for 
     ASSETS_CATCHALL_RE.test(src),
     "index.ts must keep app.all('*') ASSETS catch-all for SPA",
   );
-});
-
-// ─── lt-deploy-script-runs-flue-build ──────────────────────────────────────
-
-/**
- * @description package.json deploy and/or build (or predeploy/prebuild hooks they invoke) includes a flue build step so FlueGestaoBotAgent bindings are generated before wrangler deploy.
- */
-test("lt-deploy-script-runs-flue-build: deploy/build includes flue build", () => {
-  const pkg = JSON.parse(readFileSync(PACKAGE_JSON_PATH, "utf8"));
-  const scripts = pkg.scripts ?? {};
-  assert.equal(typeof scripts, "object");
-
-  const deployChain = [
-    ...expandScriptChain(scripts, "deploy"),
-    ...expandScriptChain(scripts, "predeploy"),
-  ].join("\n");
-  const buildChain = [
-    ...expandScriptChain(scripts, "build"),
-    ...expandScriptChain(scripts, "prebuild"),
-  ].join("\n");
-
-  const combined = `${deployChain}\n${buildChain}`;
-  assert.ok(
-    includesFlueBuild(combined),
-    "deploy and/or build (or predeploy/prebuild / npm-run chain) must include a flue build step (e.g. flue build --target cloudflare or npx flue build) so FlueGestaoBotAgent bindings are generated before wrangler deploy",
-  );
-
-  // Prefer explicit cloudflare target when present in chain text (soft signal via message if only bare flue build).
-  if (/\bflue\s+build\b/.test(combined) && !/--target\s+cloudflare/.test(combined)) {
-    // Bare `flue build` is accepted by the locked assertion ("or npx flue build").
-    assert.ok(true);
-  }
 });
 
 // ─── lt-agent-route-secret-guard-composition ───────────────────────────────
