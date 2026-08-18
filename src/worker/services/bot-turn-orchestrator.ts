@@ -12,15 +12,36 @@ import {
 import { insertTurnContext as realInsertTurnContext } from '../agent/turn-context-store.ts'
 import type { DbLike } from '../types.ts'
 
+/** Wire shape of the slice of a Telegram update this orchestrator reads. Every field is optional:
+ *  it is untrusted webhook input and each accessor already guards. */
+type TelegramEntity = { type?: string; offset?: number; length?: number }
+export type TelegramUpdate = {
+  message?: {
+    text?: string
+    entities?: TelegramEntity[]
+    chat?: { id?: string | number; type?: string }
+    from?: { id?: string | number }
+    message_thread_id?: string | number
+  }
+}
+
+/** An empresa as offered to the DM pin selector. */
+type SelectableEmpresa = { id: string; nome: string }
+
 /** @description Detect if update is a topic @mention of the bot (case-insensitive via entities). */
-function isTopicMention(update, botUsername) {
+function isTopicMention(update: TelegramUpdate | null | undefined, botUsername: string | null | undefined): boolean {
   const msg = update?.message
   if (!msg || !msg.entities || !Array.isArray(msg.entities)) return false
   const text = msg.text || ''
   const botLower = String(botUsername || '').toLowerCase()
   for (const ent of msg.entities) {
     if (ent.type === 'mention') {
-      const mention = text.slice(ent.offset, ent.offset + ent.length)
+      // Coerce rather than reject: the untyped version accepted numeric strings, and narrowing the
+      // accepted input set would silently stop detecting a legitimate mention.
+      const offset = Number(ent.offset)
+      const length = Number(ent.length)
+      if (!Number.isFinite(offset) || !Number.isFinite(length)) continue
+      const mention = text.slice(offset, offset + length)
       if (mention.toLowerCase() === `@${botLower}`) return true
     }
   }
@@ -28,24 +49,24 @@ function isTopicMention(update, botUsername) {
 }
 
 /** @description Detect DM surface (private chat). */
-function isDmSurface(update) {
+function isDmSurface(update: TelegramUpdate | null | undefined): boolean {
   const chat = update?.message?.chat
-  return chat && chat.type === 'private'
+  return Boolean(chat && chat.type === 'private')
 }
 
 /** @description Extract telegram user id as string. */
-function getTelegramUserId(update) {
+function getTelegramUserId(update: TelegramUpdate | null | undefined): string {
   return String(update?.message?.from?.id ?? '')
 }
 
 /** @description Extract message text. */
-function getMessageText(update) {
+function getMessageText(update: TelegramUpdate | null | undefined): string {
   return String(update?.message?.text ?? '')
 }
 
 /** @description Get chat/thread ids as strings. */
-function getTopicIds(update) {
-  const msg = update?.message || {}
+function getTopicIds(update: TelegramUpdate | null | undefined): { chatId: string; threadId: string } {
+  const msg = update?.message ?? {}
   return {
     chatId: String(msg.chat?.id ?? ''),
     threadId: String(msg.message_thread_id ?? ''),
@@ -57,13 +78,11 @@ const FAIL_UNLINKED =
   'Desculpe, você não está vinculado a esta empresa no Gestão. Use /vincular para conectar sua conta Telegram.'
 const FAIL_LLM =
   'Configuração de LLM ausente ou inválida para esta empresa. Verifique as configurações de provedor e chave API.'
-const FAIL_NO_MEMBERSHIPS =
-  'Nenhuma empresa ativa encontrada. Entre em contato com o administrador.'
 const FAIL_N0 =
   'Nenhuma empresa com membership ativa. Solicite acesso ou tente novamente mais tarde.'
 
 /** @description List live empresas for user ordered by nome COLLATE NOCASE, id. */
-async function listEmpresasForUserOrdered(db, userId) {
+async function listEmpresasForUserOrdered(db: DbLike, userId: string): Promise<SelectableEmpresa[]> {
     const rawRows = await Promise.resolve(
       db
         .prepare(
@@ -75,18 +94,23 @@ async function listEmpresasForUserOrdered(db, userId) {
         )
         .all(userId),
     )
-    const rows = Array.isArray(rawRows) ? rawRows : []
-  return (rows || []).map((r) => ({ id: String(r.id), nome: String(r.nome) }))
+  // NOT `Array.isArray(...) ? ... : []`. The caller treats an empty list as "this user belongs to
+  // no empresa" and responds by DELETING their active-empresa pin, so a broken adapter must never
+  // be able to look like that. Every other multi-row read here throws the same way.
+  if (!Array.isArray(rawRows)) {
+    throw new Error('db statement all() did not return an array')
+  }
+  return rawRows.map((r) => ({ id: String(r.id), nome: String(r.nome) }))
 }
 
 /** @description Check if text matches selector for bootstrap pin (exact id, unique nome, or 1-based index). Returns empresa or null. */
-function matchBootstrapSelector(text, empresas) {
+function matchBootstrapSelector(text: string, empresas: SelectableEmpresa[]): SelectableEmpresa | null {
   const t = text.trim()
   // exact id
-  const byId = empresas.find((e) => e.id === t)
+  const byId = empresas.find((e: SelectableEmpresa) => e.id === t)
   if (byId) return byId
   // unique nome (case-insensitive exact)
-  const byNome = empresas.filter((e) => e.nome.toLowerCase() === t.toLowerCase())
+  const byNome = empresas.filter((e: SelectableEmpresa) => e.nome.toLowerCase() === t.toLowerCase())
   if (byNome.length === 1) return byNome[0]
   // 1-based index
   if (/^\d+$/.test(t)) {
@@ -106,7 +130,6 @@ export async function handleBotTurn({
   llmKeyEncryptionSecret,
   runAgentTurn,
   insertTurnContext = realInsertTurnContext,
-  send,
 }: {
   db: DbLike
   update: any
@@ -114,7 +137,6 @@ export async function handleBotTurn({
   llmKeyEncryptionSecret: string
   runAgentTurn: (args: any) => Promise<string>
   insertTurnContext?: (db: DbLike, input: any) => Promise<{ turn_token: string }>
-  send?: any
 }) {
   const telegramUserId = getTelegramUserId(update)
   const messageText = getMessageText(update)
@@ -155,7 +177,8 @@ export async function handleBotTurn({
 
     if (pin) {
       // check if pin still valid (live membership)
-      const stillLive = empresas.some((e) => e.id === pin.empresa_id)
+      const pinnedEmpresaId = pin.empresa_id
+      const stillLive = empresas.some((e) => e.id === pinnedEmpresaId)
       if (!stillLive) {
         await clearDmActiveEmpresa(db, userId)
         pin = null

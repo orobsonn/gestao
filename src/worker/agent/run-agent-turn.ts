@@ -1,6 +1,5 @@
 /** @description runAgentTurn client + identity prompt builder for Flue gestao-bot turns. Posts only {message} + turn headers; safe reply on failure. */
 
-import type { DbLike } from '../types.ts'
 
 export interface BuildIdentityInput {
   empresaId: string

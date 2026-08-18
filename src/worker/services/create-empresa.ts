@@ -16,7 +16,11 @@ export type BatchStatement = {
  */
 export type BatchStatementFactory = {
   run(...params: unknown[]): unknown | Promise<unknown>
-  get?(
+  // `get` is REQUIRED here even though it is optional on the raw db this wraps: both branches of
+  // ensureBatchDb always define it (delegating to `stmt.get?.()`), so the wrapper's contract is
+  // stronger than its input's. Marking it optional made every `prepare(...).get(...)` call site
+  // read as possibly-undefined and cost 19 type errors for a case that cannot occur.
+  get(
     ...params: unknown[]
   ): Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined>
   bind(...params: unknown[]): BatchStatement

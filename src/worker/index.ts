@@ -140,11 +140,13 @@ app.all('/api/telegram/*', (c) => {
         agentInternalSecret: c.env.GESTAO_AGENT_INTERNAL_SECRET ?? '',
         app: {
           // Hono fetch wants a Request; runAgentTurn passes (url, init) — must not drop init.
-          fetch: (input, init) => {
+          fetch: async (input, init) => {
             const req =
               input instanceof Request
                 ? input
                 : new Request(String(input), init)
+            // Hono's fetch is Response | Promise<Response>; the port takes a Promise. `async`
+            // normalizes the sync branch instead of widening the port's contract.
             return app.fetch(req, c.env, c.executionCtx)
           },
         },

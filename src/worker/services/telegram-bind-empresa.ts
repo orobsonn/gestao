@@ -25,10 +25,6 @@ const EMPRESA_CHAT_SQL = `SELECT chat_id FROM empresa_telegram_chats WHERE empre
 const INSERT_MAP_SQL = `INSERT INTO empresa_telegram_chats (empresa_id, chat_id, linked_at)
    VALUES (?, ?, datetime('now'))`
 
-const UPDATE_MAP_SAME_CHAT_SQL = `UPDATE empresa_telegram_chats
-   SET linked_at = datetime('now')
-   WHERE empresa_id = ? AND chat_id = ?`
-
 /** @description Rows affected by stmt.run() — node:sqlite `{changes}` or D1 `{meta.changes}`. */
 function runChanges(result: unknown): number | null {
   if (result == null || typeof result !== 'object') {
@@ -92,7 +88,7 @@ async function claimViaBatch(
   )
   const empresaId =
     codeRow && typeof codeRow.empresa_id === 'string' ? codeRow.empresa_id : null
-  if (!empresaId) return 'invalid'
+  if (!codeRow || !empresaId) return 'invalid'
   if (codeRow.used_at) {
     const existing = await Promise.resolve(
       batchDb.prepare(EMPRESA_CHAT_SQL).get(empresaId),
