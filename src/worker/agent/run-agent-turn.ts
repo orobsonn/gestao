@@ -40,7 +40,7 @@ export interface RunAgentTurnInput {
   db?: unknown
 }
 
-const SAFE_REPLY = 'Não consegui processar agora. Tente de novo em instantes.'
+export const SAFE_REPLY = 'Não consegui processar agora. Tente de novo em instantes.'
 
 /**
  * @description POST to Flue agent route with ONLY {message} body + secret + turn-token headers.
