@@ -171,6 +171,16 @@ function expandScriptChain(scripts, name, seen = new Set()) {
   for (const m of runRefs) {
     out.push(...expandScriptChain(scripts, m[1], seen));
   }
+  // Follow `node scripts/x.mjs` into the file. Without this the chain stops at the delegating
+  // script and the invariant reads as absent while the deploy genuinely performs it — the whole
+  // point is to pin the STEP, wherever the deploy chose to put it.
+  const nodeRefs = body.matchAll(/node\s+((?:\.\/)?scripts\/[a-zA-Z0-9._/-]+\.mjs)/g);
+  for (const m of nodeRefs) {
+    const scriptPath = resolve(ROOT, m[1]);
+    if (seen.has(scriptPath) || !existsSync(scriptPath)) continue;
+    seen.add(scriptPath);
+    out.push(readFileSync(scriptPath, "utf8"));
+  }
   return out;
 }
 
@@ -178,12 +188,38 @@ function expandScriptChain(scripts, name, seen = new Set()) {
  * @description True when script text includes a flue build step for cloudflare target.
  * @param {string} text
  */
+function stripNonCommandText(text) {
+  return text
+    // Require the `/*` to start a token, so a glob like "src/**/*" or a regex literal cannot open
+    // a runaway "comment" that swallows the real command and fails the test for the wrong reason.
+    .replace(/(^|[\s;{}(])\/\*[\s\S]*?\*\//g, "$1 ")
+    // `[^:/]` (not `[^:]`) so the third slash of file:/// cannot open a "line comment" either.
+    .replace(/(^|[^:/])\/\/[^\n]*/g, "$1 ")
+    .replace(/console\.\w+\([\s\S]*?\)/g, " "); // log strings that merely NAME the step
+}
+
+/**
+ * @description True when script text INVOKES a flue build step. Prose does not count: the words
+ * appear in this repo's deploy comments and progress logs, and matching those made the assertion
+ * survive deleting the actual command. Matches a shell form (package.json) or an argv array form
+ * (a node script that spawns it).
+ */
 function includesFlueBuild(text) {
   if (!text) return false;
-  // flue build --target cloudflare | npx flue build | flue build (cloudflare implied)
-  if (/\bflue\s+build\b/.test(text)) return true;
-  if (/\bnpx\s+flue\s+build\b/.test(text)) return true;
-  if (/\b@flue\/cli\b.*\bbuild\b/.test(text)) return true;
+  const code = stripNonCommandText(text);
+  // shell: `flue build ...` / `npx flue build ...`
+  if (/(^|[\s&|;('"`])(npx\s+)?flue\s+build\b/.test(code)) return true;
+  // argv array, ANCHORED ON THE SPAWN: `run('npx', ['flue', 'build', ...])`. Matching the bare
+  // adjacency of the two strings would also match `const STEPS = ['flue', 'build']` or a help
+  // text — i.e. it would go green again with the real command deleted.
+  if (
+    /\b(run|spawn|spawnSync|exec|execFile|execFileSync|execSync)\s*\(\s*["'][^"']*(npx|node|flue)[^"']*["']\s*,\s*\[[^\]]*["']flue["']\s*,\s*["']build["']/.test(
+      code,
+    )
+  ) {
+    return true;
+  }
+  if (/@flue\/cli\b[\s\S]{0,40}\bbuild\b/.test(code)) return true;
   return false;
 }
 

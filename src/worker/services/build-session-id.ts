@@ -1,10 +1,20 @@
 /** @description Build stable session id for topic or dm surfaces. topic:chat:thread or dm:userId. String canonical, no spaces. */
-export function buildSessionId({ kind, chatId, threadId, userId }) {
-  if (kind === 'topic') {
-    return `topic:${String(chatId)}:${String(threadId)}`;
+
+/** Telegram ids arrive as numbers from the wire and as strings from storage; both canonicalize. */
+type TelegramId = string | number
+
+export type SessionIdInput =
+  | { kind: 'topic'; chatId: TelegramId; threadId: TelegramId; userId?: TelegramId }
+  | { kind: 'dm'; userId: TelegramId; chatId?: TelegramId; threadId?: TelegramId }
+
+export function buildSessionId(input: SessionIdInput): string {
+  if (input.kind === 'topic') {
+    return `topic:${String(input.chatId)}:${String(input.threadId)}`
   }
-  if (kind === 'dm') {
-    return `dm:${String(userId)}`;
+  if (input.kind === 'dm') {
+    return `dm:${String(input.userId)}`
   }
-  throw new Error('invalid kind');
+  // Unreachable for typed callers, but this module is also imported from .mjs tests and from the
+  // webhook path, where `kind` arrives as untyped data. Keep the runtime guard.
+  throw new Error('invalid kind')
 }

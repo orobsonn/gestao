@@ -107,7 +107,7 @@ async function claimViaBatch(
     codeRow && typeof codeRow.empresa_id === 'string' ? codeRow.empresa_id : null
   const expertId =
     codeRow && typeof codeRow.expert_id === 'string' ? codeRow.expert_id : null
-  if (!empresaId || !expertId) return 'invalid'
+  if (!codeRow || !empresaId || !expertId) return 'invalid'
   if (codeRow.used_at) {
     const existingTopic = await Promise.resolve(
       batchDb.prepare(EXPERT_TOPIC_SQL).get(expertId),

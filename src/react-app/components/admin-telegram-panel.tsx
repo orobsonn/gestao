@@ -18,7 +18,6 @@ import {
   mintEmpresaCommand,
   mintExpertCommand,
   type TelegramBindingsStatus,
-  type TelegramMintResponse,
 } from "@/lib/domain-api";
 
 type MintState = {

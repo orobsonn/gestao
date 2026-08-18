@@ -2,7 +2,7 @@
 
 import { defineAgent, registerProvider, type AgentRouteHandler } from '@flue/runtime'
 import { createGestaoBotTools, type GestaoBotToolsClosure } from '../../src/worker/agent/gestao-bot-tools.ts'
-import { bindTurnTokenToAgent, consumeAgentBoundTurn, consumeTurnContext } from '../../src/worker/agent/turn-context-store.ts'
+import { bindTurnTokenToAgent, consumeAgentBoundTurn } from '../../src/worker/agent/turn-context-store.ts'
 import { enableForeignKeysAsync } from '../../src/worker/db.ts'
 import { buildAgentIdentityPrompt } from '../../src/worker/agent/run-agent-turn.ts'
 import { resolveEmpresaLlmTurnModel } from '../../src/worker/services/llm-turn-model.ts'
