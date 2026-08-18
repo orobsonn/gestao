@@ -1,10 +1,11 @@
 /**
  * Locked scripts/smoke-prod.mjs contract: `runSmoke({ baseUrl, fetchImpl })` resolves a result
  * shaped `{ ok, checks: [{ name, url, method, expected, observed, passed }] }`, reports every
- * check passing when GET / is 200, GET /api/auth/me is 401 and POST /agents/gestao-bot/<id> is
- * 403 — and, critically, catches the case where the SPA ASSETS catch-all swallows the agent route
- * (POST /agents/gestao-bot/<id> observed as 200 instead of 403), naming that exact check as
- * failed with both the expected and observed status. No network — fetchImpl is a plain stub.
+ * check passing when GET / is 200, GET /api/auth/me is 401, POST /agents/gestao-bot/<id> is 403
+ * and GET /agents/gestao-bot/<id> (the history READ route) is 403 — and, critically, catches the
+ * case where the SPA ASSETS catch-all swallows the agent route (POST /agents/gestao-bot/<id>
+ * observed as 200 instead of 403), naming that exact check as failed with both the expected and
+ * observed status. No network — fetchImpl is a plain stub.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -26,6 +27,9 @@ async function fetchImplAllGreen(url, init) {
   if (method === "GET" && pathname === "/api/auth/me") {
     return new Response("unauthorized", { status: 401 });
   }
+  if (method === "GET" && pathname.startsWith("/agents/gestao-bot/")) {
+    return new Response("forbidden", { status: 403 });
+  }
   if (method === "POST" && pathname.startsWith("/agents/gestao-bot/")) {
     return new Response("forbidden", { status: 403 });
   }
@@ -46,6 +50,9 @@ async function fetchImplSwallowedAgentRoute(url, init) {
   if (method === "GET" && pathname === "/api/auth/me") {
     return new Response("unauthorized", { status: 401 });
   }
+  if (method === "GET" && pathname.startsWith("/agents/gestao-bot/")) {
+    return new Response("forbidden", { status: 403 });
+  }
   if (method === "POST" && pathname.startsWith("/agents/gestao-bot/")) {
     return new Response("ok", { status: 200 });
   }
@@ -54,13 +61,13 @@ async function fetchImplSwallowedAgentRoute(url, init) {
 
 // ─── lt-flue2-smoke-all-green ───────────────────────────────────────────────
 
-test("lt-flue2-smoke-all-green: runSmoke resolves ok=true with all three checks passed", async () => {
+test("lt-flue2-smoke-all-green: runSmoke resolves ok=true with all four checks passed", async () => {
   const result = await runSmoke({ baseUrl: BASE_URL, fetchImpl: fetchImplAllGreen });
 
   assert.equal(
     result.ok,
     true,
-    `runSmoke must resolve ok === true when GET / is 200, GET /api/auth/me is 401 and POST /agents/gestao-bot/<id> is 403, got ${JSON.stringify(result)}`,
+    `runSmoke must resolve ok === true when GET / is 200, GET /api/auth/me is 401, POST /agents/gestao-bot/<id> is 403 and GET /agents/gestao-bot/<id> is 403, got ${JSON.stringify(result)}`,
   );
   assert.ok(
     Array.isArray(result.checks),
@@ -68,8 +75,8 @@ test("lt-flue2-smoke-all-green: runSmoke resolves ok=true with all three checks 
   );
   assert.equal(
     result.checks.length,
-    3,
-    `runSmoke must report exactly 3 checks (GET /, GET /api/auth/me, POST /agents/gestao-bot/<id>), got ${result.checks.length}`,
+    4,
+    `runSmoke must report exactly 4 checks (GET /, GET /api/auth/me, POST /agents/gestao-bot/<id>, GET /agents/gestao-bot/<id>), got ${result.checks.length}`,
   );
   for (const check of result.checks) {
     assert.equal(
