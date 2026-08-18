@@ -179,7 +179,7 @@ export function createGestaoBotTools(
       description:
         'Lista tarefas da empresa ativa. Preferir o campo telegram_preview na resposta ao usuário (já formatado p/ Telegram).',
       input: v.object({}),
-      run: async ({ input }) => {
+      run: async () => {
         await ensureFk()
         // ignore any model-supplied empresa_id
         const sql = `SELECT id, campanha_id, titulo, status, dono_id, created_by, deleted_at
@@ -198,7 +198,11 @@ export function createGestaoBotTools(
           fazendo: { label: 'Fazendo', emoji: '🔄' },
           feito: { label: 'Feito', emoji: '✅' },
         }
-        const enriched = list.map((r) => {
+        type EnrichedTarefa = Record<string, unknown> & {
+          status_label: string
+          status_emoji: string
+        }
+        const enriched: EnrichedTarefa[] = list.map((r) => {
           const st = String(r.status ?? '')
           const meta = statusMeta[st] ?? { label: st || '—', emoji: '•' }
           return {
@@ -393,7 +397,9 @@ export function createGestaoBotTools(
       const titulo =
         typeof input.titulo === 'string' ? input.titulo : undefined
       if (!status && !titulo) return { ok: false, error: 'status ou titulo obrigatório' }
-      if (status && !TAREFA_STATUS.includes(status)) {
+      // TAREFA_STATUS is a readonly tuple of the union; `status` is an arbitrary model-supplied
+      // string at this point, which is exactly what this guard exists to reject.
+      if (status && !(TAREFA_STATUS as readonly string[]).includes(status)) {
         return { ok: false, error: 'status inválido' }
       }
       if (status) {
@@ -510,7 +516,7 @@ export function createGestaoBotTools(
       name: 'listar_membros',
       description: 'Lista membros da empresa.',
       input: v.object({}),
-      run: async ({ input }) => {
+      run: async () => {
       await ensureFk()
       const sql = `SELECT m.user_id, u.name, m.papel
         FROM empresa_membros m
@@ -528,7 +534,7 @@ export function createGestaoBotTools(
         name: 'listar_campanhas',
         description: 'Lista campanhas do expert no tópico.',
         input: v.object({}),
-        run: async ({ input }) => {
+        run: async () => {
         await ensureFk()
         if (!closureExpertId) return { campanhas: [] }
         const sql = `SELECT id, nome, status, expert_id FROM campanhas
@@ -549,7 +555,7 @@ export function createGestaoBotTools(
         name: 'listar_minhas_empresas',
         description: 'Lista empresas do usuário.',
         input: v.object({}),
-        run: async ({ input }) => {
+        run: async () => {
         await ensureFk()
         const sql = `SELECT e.id, e.nome
           FROM empresa_membros m

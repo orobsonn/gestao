@@ -1,5 +1,15 @@
+import type { RowReaderDb } from "../types.ts";
+
 /** @description Resolve Telegram actor: telegramUserId → user_telegram_links → live empresa_membros (empresas.deleted_at IS NULL). Returns {ok:true,userId} or {ok:false,reason:'not_linked'|'not_member'}. */
-export async function resolveTelegramActor(db, telegramUserId, empresaId) {
+export type TelegramActor =
+  | { ok: true; userId: string }
+  | { ok: false; reason: 'not_linked' | 'not_member' }
+
+export async function resolveTelegramActor(
+  db: RowReaderDb,
+  telegramUserId: string | number,
+  empresaId: string | number,
+): Promise<TelegramActor> {
   const link = await Promise.resolve(
     db
       .prepare(`SELECT user_id FROM user_telegram_links WHERE telegram_user_id = ? LIMIT 1`)

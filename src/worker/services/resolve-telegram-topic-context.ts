@@ -1,5 +1,13 @@
+import type { RowReaderDb } from "../types.ts";
+
 /** @description Resolve {empresa_id, expert_id} from chat+thread via inner join on live expert_telegram_topics + empresa_telegram_chats (deleted_at IS NULL). Map-only, no text parsing. */
-export async function resolveTelegramTopicContext(db, chatId, messageThreadId) {
+export type TelegramTopicContext = { empresa_id: string; expert_id: string }
+
+export async function resolveTelegramTopicContext(
+  db: RowReaderDb,
+  chatId: string | number,
+  messageThreadId: string | number,
+): Promise<TelegramTopicContext | null> {
   const row = await Promise.resolve(
     db
       .prepare(

@@ -83,7 +83,9 @@ export type TelegramAppDeps = {
   fetchImpl?: typeof fetch
   botUsername?: string
   llmKeyEncryptionSecret?: string
-  waitUntil?: (p: Promise<unknown> | unknown) => void
+  // `Promise<unknown> | unknown` collapses to `unknown`, which is WIDER than the platform's
+  // waitUntil and so nothing real could be assigned to it. Only promises are ever passed.
+  waitUntil?: (p: Promise<unknown>) => void
   runAgentTurn?: (args: any) => Promise<string>
   agentInternalSecret?: string
 }
@@ -673,13 +675,15 @@ export function createTelegramApp(
                   : null
               const chatId =
                 chat && (typeof chat.id === 'number' || typeof chat.id === 'string') ? chat.id : null
-              const threadId =
-                msg &&
-                typeof msg === 'object' &&
-                'message_thread_id' in msg &&
-                (typeof (msg as Record<string, unknown>).message_thread_id === 'number' ||
-                  typeof (msg as Record<string, unknown>).message_thread_id === 'string')
+              // Read once into a local: narrowing a `(msg as Record<...>).x` expression does not
+              // carry into a branch that re-reads the same cast, so the value stayed `unknown`.
+              const rawThreadId =
+                msg && typeof msg === 'object' && 'message_thread_id' in msg
                   ? (msg as Record<string, unknown>).message_thread_id
+                  : undefined
+              const threadId =
+                typeof rawThreadId === 'number' || typeof rawThreadId === 'string'
+                  ? rawThreadId
                   : undefined
               if (chatId != null) {
                 return sendTelegramMessage(

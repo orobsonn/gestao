@@ -6,6 +6,7 @@ import { requireActiveEmpresa } from '../middleware/require-active-empresa.ts'
 import { requireEmpresaAdmin } from '../middleware/require-empresa-admin.ts'
 import { requireSession } from '../middleware/require-session.ts'
 import { ensureBatchDb } from '../services/create-empresa.ts'
+import type { BatchDbLike } from '../services/create-empresa.ts'
 import type { DbLike } from '../types.ts'
 
 const TELEGRAM_BIND_CODE_BYTES = 32
@@ -105,7 +106,9 @@ async function loadExpertsBindStatus(
 }
 
 async function mintBindCode(
-  batchDb: DbLike,
+  // Not DbLike: this function calls `.batch()` and `.prepare().bind()`, neither of which exists on
+  // DbLike. The old annotation was simply wrong and every call site had to be force-fed.
+  batchDb: BatchDbLike,
   db: DbLike,
   params: {
     empresaId: string
